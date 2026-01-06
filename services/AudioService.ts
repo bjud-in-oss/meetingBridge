@@ -1,24 +1,30 @@
 
-export interface IAudioService {
-  startCapture(onData: (base64: string) => void): Promise<void>;
-  stopCapture(): Promise<void>;
-  playAudioQueue(base64: string): Promise<void>;
-}
+import { AudioDevice } from '../types/schema';
 
-export class AudioService implements IAudioService {
+export class AudioService {
   private static instance: AudioService;
   private audioContext: AudioContext | null = null;
+  
+  // Hardware Capture
   private mediaStream: MediaStream | null = null;
   private processor: ScriptProcessorNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
   
-  // VAD Settings
-  private readonly VAD_THRESHOLD = 0.02; // RMS threshold
-  private readonly SAMPLE_RATE = 16000;
+  // External Input (WebSocket)
+  private inputSocket: WebSocket | null = null;
+  
+  // External Output (WebSocket)
+  private outputSocket: WebSocket | null = null;
 
-  private constructor() {
-    // Initialize AudioContext on user interaction usually, keeping it null for now
-  }
+  // Configuration
+  private currentInputDeviceId: string = 'default';
+  private currentOutputDeviceId: string = 'default';
+  private useExternalInput = false;
+  private useExternalOutput = false;
+
+  private readonly SAMPLE_RATE = 16000; // Gemini Native 16k preferred
+
+  private constructor() {}
 
   public static getInstance(): AudioService {
     if (!AudioService.instance) {
@@ -27,80 +33,165 @@ export class AudioService implements IAudioService {
     return AudioService.instance;
   }
 
-  private getContext(): AudioContext {
-    if (!this.audioContext) {
-      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
-        sampleRate: this.SAMPLE_RATE,
-      });
+  // =================================================================
+  // DEVICE MANAGEMENT
+  // =================================================================
+
+  public async getDevices(): Promise<AudioDevice[]> {
+    try {
+      // Request permission first to get labels
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      return devices
+        .filter(d => d.kind === 'audioinput' || d.kind === 'audiooutput')
+        .map(d => ({
+          deviceId: d.deviceId,
+          label: d.label || `${d.kind} (${d.deviceId.slice(0, 4)}...)`,
+          kind: d.kind as 'audioinput' | 'audiooutput'
+        }));
+    } catch (e) {
+      console.error('Failed to enumerate devices', e);
+      return [];
     }
-    return this.audioContext;
   }
 
+  public setInputDevice(deviceId: string) {
+    this.currentInputDeviceId = deviceId;
+    // If currently capturing, restart to apply change
+    if (this.mediaStream) {
+      // NOTE: This assumes consumer will restart capture. 
+      // We could emit an event, but simplest is to store state for next startCapture.
+    }
+  }
+
+  public setOutputDevice(deviceId: string) {
+    this.currentOutputDeviceId = deviceId;
+    if (this.audioContext && 'setSinkId' in this.audioContext) {
+        // Experimental feature for AudioContext output routing
+        (this.audioContext as any).setSinkId(deviceId)
+            .catch((e: any) => console.warn('setSinkId failed', e));
+    }
+  }
+
+  public configureExternalIO(
+    useInput: boolean, inputUrl: string, 
+    useOutput: boolean, outputUrl: string
+  ) {
+    this.useExternalInput = useInput;
+    this.useExternalOutput = useOutput;
+
+    // Handle Input Socket Connection
+    if (useInput && inputUrl) {
+        if (this.inputSocket) this.inputSocket.close();
+        this.inputSocket = new WebSocket(inputUrl);
+        this.inputSocket.binaryType = 'arraybuffer';
+        this.inputSocket.onopen = () => console.log('[Audio] Ext Input Connected');
+        this.inputSocket.onerror = (e) => console.error('[Audio] Ext Input Error', e);
+    } else {
+        if (this.inputSocket) this.inputSocket.close();
+        this.inputSocket = null;
+    }
+
+    // Handle Output Socket Connection
+    if (useOutput && outputUrl) {
+        if (this.outputSocket) this.outputSocket.close();
+        this.outputSocket = new WebSocket(outputUrl);
+        this.outputSocket.onopen = () => console.log('[Audio] Ext Output Connected');
+        this.outputSocket.onerror = (e) => console.error('[Audio] Ext Output Error', e);
+    } else {
+        if (this.outputSocket) this.outputSocket.close();
+        this.outputSocket = null;
+    }
+  }
+
+  // =================================================================
+  // CAPTURE (Hardware OR Socket)
+  // =================================================================
+
   public async startCapture(onData: (base64: string) => void): Promise<void> {
-    const ctx = this.getContext();
-    if (ctx.state === 'suspended') await ctx.resume();
+    if (this.useExternalInput && this.inputSocket) {
+        // SOCKET MODE
+        console.log('[Audio] Capturing from WebSocket...');
+        this.inputSocket.onmessage = (event) => {
+            // Assume incoming is raw PCM ArrayBuffer or Blob
+            if (event.data instanceof ArrayBuffer) {
+               const base64 = this.arrayBufferToBase64(event.data);
+               onData(base64);
+            }
+        };
+    } else {
+        // HARDWARE MODE
+        console.log(`[Audio] Capturing from Mic (${this.currentInputDeviceId})...`);
+        const ctx = this.getContext();
+        if (ctx.state === 'suspended') await ctx.resume();
 
-    try {
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({ 
-        audio: { 
-          echoCancellation: true, 
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: this.SAMPLE_RATE
-        } 
-      });
+        // Stop existing
+        await this.stopCapture();
 
-      this.source = ctx.createMediaStreamSource(this.mediaStream);
-      
-      // Buffer size 4096 = ~256ms latency at 16kHz
-      this.processor = ctx.createScriptProcessor(4096, 1, 1);
+        this.mediaStream = await navigator.mediaDevices.getUserMedia({ 
+            audio: { 
+              deviceId: this.currentInputDeviceId ? { exact: this.currentInputDeviceId } : undefined,
+              echoCancellation: true, 
+              sampleRate: this.SAMPLE_RATE
+            } 
+        });
 
-      this.processor.onaudioprocess = (e) => {
-        const inputData = e.inputBuffer.getChannelData(0);
-        
-        // 1. VAD Check
-        if (this.isSilence(inputData)) return;
+        this.source = ctx.createMediaStreamSource(this.mediaStream);
+        this.processor = ctx.createScriptProcessor(4096, 1, 1);
 
-        // 2. Convert Float32 to Int16
-        const int16Data = this.floatTo16BitPCM(inputData);
+        this.processor.onaudioprocess = (e) => {
+            const inputData = e.inputBuffer.getChannelData(0);
+            // Convert to Int16 for Gemini
+            const int16Data = this.floatTo16BitPCM(inputData);
+            const base64 = this.arrayBufferToBase64(int16Data.buffer);
+            onData(base64);
+        };
 
-        // 3. Base64 Encode
-        const base64 = this.arrayBufferToBase64(int16Data.buffer);
-        
-        onData(base64);
-      };
-
-      this.source.connect(this.processor);
-      this.processor.connect(ctx.destination); // Connect to destination to keep alive (muted by default usually?)
-    } catch (err) {
-      console.error('[AudioService] Capture failed', err);
-      throw err;
+        this.source.connect(this.processor);
+        this.processor.connect(ctx.destination);
     }
   }
 
   public async stopCapture(): Promise<void> {
+    // Hardware cleanup
     if (this.mediaStream) {
       this.mediaStream.getTracks().forEach(track => track.stop());
       this.mediaStream = null;
     }
     if (this.processor && this.source) {
-      this.source.disconnect(this.processor);
+      this.source.disconnect();
       this.processor.disconnect();
       this.processor = null;
       this.source = null;
     }
+    // Socket cleanup (detach listener but keep connection open for config)
+    if (this.inputSocket) {
+        this.inputSocket.onmessage = null;
+    }
   }
 
+  // =================================================================
+  // PLAYBACK (Speaker OR Socket)
+  // =================================================================
+
   public async playAudioQueue(base64: string): Promise<void> {
+    const arrayBuffer = this.base64ToArrayBuffer(base64);
+
+    // 1. External Output Routing
+    if (this.useExternalOutput && this.outputSocket && this.outputSocket.readyState === WebSocket.OPEN) {
+        this.outputSocket.send(arrayBuffer);
+        // If strict external output, we might want to return here. 
+        // For now, let's allow "Monitor" locally too, or return if exclusive.
+        // return; 
+    }
+
+    // 2. Hardware Output Routing
     const ctx = this.getContext();
     if (ctx.state === 'suspended') await ctx.resume();
 
     try {
-      const arrayBuffer = this.base64ToArrayBuffer(base64);
       const int16Data = new Int16Array(arrayBuffer);
       const float32Data = new Float32Array(int16Data.length);
-
-      // Convert Int16 -> Float32
       for (let i = 0; i < int16Data.length; i++) {
         float32Data[i] = int16Data[i] / 32768.0;
       }
@@ -117,15 +208,21 @@ export class AudioService implements IAudioService {
     }
   }
 
-  // --- Helpers ---
+  // =================================================================
+  // HELPERS
+  // =================================================================
 
-  private isSilence(data: Float32Array): boolean {
-    let sum = 0;
-    for (let i = 0; i < data.length; i++) {
-      sum += data[i] * data[i];
+  private getContext(): AudioContext {
+    if (!this.audioContext) {
+      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
+        sampleRate: this.SAMPLE_RATE,
+      });
+      // Apply initial sink ID if set
+      if (this.currentOutputDeviceId !== 'default' && 'setSinkId' in this.audioContext) {
+          (this.audioContext as any).setSinkId(this.currentOutputDeviceId);
+      }
     }
-    const rms = Math.sqrt(sum / data.length);
-    return rms < this.VAD_THRESHOLD;
+    return this.audioContext;
   }
 
   private floatTo16BitPCM(input: Float32Array): Int16Array {

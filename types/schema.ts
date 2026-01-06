@@ -5,41 +5,68 @@ export enum NetworkRole {
   LEAF = 'LEAF',
 }
 
-export type MeetingMode = 'OPEN_CLASSROOM' | 'LECTURE_ONLY';
+export type MeetingMode = 'OPEN_CLASSROOM' | 'LECTURE_ONLY' | 'TEXT_DISTRIBUTION_MODE';
 
 export interface Peer {
   id: string;
   displayName: string;
   role: NetworkRole;
-  /** The language code this peer speaks/listens to (e.g., 'sv-SE', 'es-ES') */
   myLanguage: string;
-  /** The ID of the upstream node (Branch or Root) this peer sends audio TO. Null if Root. */
   parentId: string | null;
-  /** The IDs of downstream nodes (Branches or Leaves) this peer sends audio DOWN to. */
   childrenIds: string[];
-  /** If true, this peer is prevented from broadcasting audio (Sermon Mode) */
   isMicLocked: boolean;
 }
 
-export interface AudioPayload {
-  /** ID of the original speaker */
-  senderId: string;
-  /** Language code of the original audio */
-  originLanguage: string;
-  /** Language code of the audioData. If isTranslation is false, matches originLanguage. */
+export interface ProsodyMetadata {
+  emotion: 'Neutral' | 'Excited' | 'Solemn' | 'Urgent' | 'Happy';
+  speed: number; // 0.5 to 2.0
+}
+
+/**
+ * The new rich payload for Text Distribution Mode.
+ * Replaces raw AudioPayload for the primary communication channel.
+ */
+export interface TranslationPayload {
+  type: 'TRANSLATION_DATA';
+  text: string;
+  senderId: string; // The origin Peer ID or "ROOT"
+  speakerLabel: string; // "Speaker A", "Speaker B", or specific name
+  prosody: ProsodyMetadata;
   targetLanguage: string;
-  /** Base64 encoded Opus audio data */
+  isFinal: boolean;
+}
+
+/** Legacy/Fallback for raw audio */
+export interface AudioPayload {
+  senderId: string;
+  originLanguage: string;
+  targetLanguage: string;
   audioData: string;
-  /** Whether this payload contains translated audio or original source audio */
   isTranslation: boolean;
-  /** Optional transcript of the audio chunk */
   transcript?: string;
-  /** Indicates if this transcript segment is finalized */
   isFinal?: boolean;
 }
 
 export interface MeetingState {
   meetingMode: MeetingMode;
-  /** The ID of the Root node (Meeting Host) */
   rootId: string;
+}
+
+// --- Audio I/O Types ---
+
+export interface AudioDevice {
+  deviceId: string;
+  label: string;
+  kind: 'audioinput' | 'audiooutput';
+}
+
+export interface AudioSettingsState {
+  inputDeviceId: string; // 'default' or specific ID
+  outputDeviceId: string; // 'default' or specific ID
+  
+  useExternalInput: boolean; // If true, listen to WebSocket instead of Mic
+  externalInputUrl: string;
+  
+  useExternalOutput: boolean; // If true, send translation audio to WebSocket
+  externalOutputUrl: string;
 }
