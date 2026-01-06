@@ -1,20 +1,19 @@
 
-import { GoogleGenAI, LiveSession, LiveServerMessage, Modality } from "@google/genai";
+import { GoogleGenAI, LiveServerMessage, Modality } from "@google/genai";
 import { NetworkService } from "./NetworkService";
 import { AudioPayload, NetworkRole } from "../types/schema";
 
 export class LanguageBranchService {
   private network: NetworkService;
   private ai: GoogleGenAI;
-  private session: Promise<LiveSession> | null = null;
+  private session: Promise<any> | null = null;
   private isConnected = false;
 
   private myLanguage: string = 'en-US';
   
-  // Audio Context for potential decoding/encoding (Placeholder for logic)
-  // In a real browser env, we need AudioContext to decode Opus -> PCM for Gemini
-  // and PCM -> Opus for Network.
-  
+  // Buffer to hold transcript until next audio chunk or flush
+  private pendingTranscript = '';
+
   constructor() {
     this.network = NetworkService.getInstance();
     
@@ -44,6 +43,8 @@ export class LanguageBranchService {
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
           responseModalities: [Modality.AUDIO],
+          // Enable transcription for the output (translation)
+          outputAudioTranscription: { model: 'gemini-2.5-flash-native-audio-preview-12-2025' }, 
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
           },
@@ -107,14 +108,21 @@ export class LanguageBranchService {
   }
 
   private async handleGeminiMessage(msg: LiveServerMessage) {
-    // Gemini sends back translated audio
-    const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
+    const serverContent = msg.serverContent;
+
+    // 1. Capture Transcript
+    if (serverContent?.outputTranscription?.text) {
+      this.pendingTranscript += serverContent.outputTranscription.text;
+    }
+
+    // 2. Capture Audio & Broadcast
+    const audioData = serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
+    
+    // Logic: If we have audio, we attach pending transcript and send.
+    // If we have only text, we might wait for audio, or send if it gets too long.
+    // For simplicity, we attach to audio packets.
     
     if (audioData) {
-      // audioData is PCM 24kHz from Gemini usually, need to encode to Opus for network
-      // For this prototype, we'll send it as is or wrap it.
-      // Assuming AudioPayload supports the format we send.
-      
       const opusData = await this.encodePCMToOpus(audioData);
 
       const translatedPayload: AudioPayload = {
@@ -122,8 +130,13 @@ export class LanguageBranchService {
         originLanguage: 'mixed', // Source unknown at this point
         targetLanguage: this.myLanguage,
         audioData: opusData,
-        isTranslation: true
+        isTranslation: true,
+        transcript: this.pendingTranscript || undefined,
+        isFinal: false // Real-time
       };
+
+      // Clear buffer after sending
+      this.pendingTranscript = '';
 
       this.network.broadcastToChildren(translatedPayload);
     }
@@ -133,18 +146,11 @@ export class LanguageBranchService {
   // HELPER STUBS (Audio Transcoding)
   // =================================================================
   
-  // NOTE: In a real implementation, these would use AudioContext or WebAssembly (libopus).
-  // Gemini Live requires Linear PCM 16kHz. 
-  // Trystero/WebRTC usually works with Opus.
-  
   private async decodeOpusToPCM(base64Opus: string): Promise<string> {
-    // Placeholder: Return input assuming it might already be compatible or handled elsewhere
-    // In production: decodeBase64(opus) -> PCM Float32 -> Int16 -> Base64
     return base64Opus; 
   }
 
   private async encodePCMToOpus(base64PCM: string): Promise<string> {
-    // Placeholder: Return input
     return base64PCM;
   }
 }

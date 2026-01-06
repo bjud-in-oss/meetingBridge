@@ -32,7 +32,8 @@ export const LoginScreen = () => {
       justifyContent: 'center',
       minHeight: '100vh',
       background: '#f0f2f5',
-      fontFamily: 'system-ui, sans-serif'
+      fontFamily: 'system-ui, sans-serif',
+      color: '#333'
     }}>
       <div style={{
         background: 'white',
@@ -45,7 +46,7 @@ export const LoginScreen = () => {
         <h1 style={{ textAlign: 'center', marginBottom: '1.5rem', color: '#1a1a1a' }}>Join Translation Tree</h1>
         
         <div style={{ marginBottom: '1rem' }}>
-          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 500 }}>Display Name</label>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 500, color: '#333' }}>Display Name</label>
           <input 
             type="text" 
             value={name}
@@ -57,13 +58,15 @@ export const LoginScreen = () => {
               borderRadius: '8px',
               border: '1px solid #ddd',
               fontSize: '1rem',
-              boxSizing: 'border-box'
+              boxSizing: 'border-box',
+              backgroundColor: 'white',
+              color: '#333'
             }}
           />
         </div>
 
         <div style={{ marginBottom: '1rem' }}>
-          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 500 }}>Your Language</label>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 500, color: '#333' }}>Your Language</label>
           <select 
             value={lang}
             onChange={(e) => setLang(e.target.value)}
@@ -74,6 +77,7 @@ export const LoginScreen = () => {
               border: '1px solid #ddd',
               fontSize: '1rem',
               backgroundColor: 'white',
+              color: '#333',
               boxSizing: 'border-box'
             }}
           >
@@ -91,7 +95,7 @@ export const LoginScreen = () => {
             onChange={(e) => setIsHost(e.target.checked)}
             style={{ width: '1.2rem', height: '1.2rem' }}
           />
-          <label htmlFor="hostToggle" style={{ cursor: 'pointer', userSelect: 'none' }}>
+          <label htmlFor="hostToggle" style={{ cursor: 'pointer', userSelect: 'none', color: '#333' }}>
             Start as Meeting Host (ROOT)
           </label>
         </div>

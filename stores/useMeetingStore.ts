@@ -5,11 +5,22 @@ import { LanguageBranchService } from '../services/LanguageBranchService';
 import { AudioService } from '../services/AudioService';
 import { NetworkRole, Peer, AudioPayload } from '../types/schema';
 
+export interface TranscriptItem {
+  id: string;
+  senderId: string;
+  text: string;
+  isTranslation: boolean;
+  timestamp: number;
+}
+
 interface MeetingState {
   connectionStatus: 'IDLE' | 'CONNECTING' | 'CONNECTED';
   treeState: Peer | null;
   peers: string[]; // List of peer IDs in the room
   isMicOn: boolean;
+  
+  transcripts: TranscriptItem[];
+  volumeLevel: number; // 0-100 for UI visualization
 
   joinMeeting: (roomId: string, displayName: string, language: string, forceRoot: boolean) => void;
   toggleMic: () => Promise<void>;
@@ -21,6 +32,8 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
   treeState: null,
   peers: [],
   isMicOn: false,
+  transcripts: [],
+  volumeLevel: 0,
 
   joinMeeting: (roomId, displayName, language, forceRoot) => {
     set({ connectionStatus: 'CONNECTING' });
@@ -28,30 +41,42 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     const net = NetworkService.getInstance();
     
     // Instantiate Branch Logic
-    // Note: LanguageBranchService hooks into NetworkService.onAudioReceived in its constructor
     const branchService = new LanguageBranchService();
     branchService.setLanguage(language);
 
     // --- SUBSCRIPTIONS ---
 
-    // 1. Audio Received -> Play it
-    // NOTE: LanguageBranchService chains this, so this still fires for local playback
+    // 1. Audio/Data Received
     net.onAudioReceived = (payload: AudioPayload) => {
-      const audio = AudioService.getInstance();
-      audio.playAudioQueue(payload.audioData);
+      // Play Audio if exists
+      if (payload.audioData && payload.audioData.length > 0) {
+        const audio = AudioService.getInstance();
+        audio.playAudioQueue(payload.audioData);
+      }
+
+      // Handle Transcript
+      if (payload.transcript) {
+        set(state => ({
+          transcripts: [...state.transcripts, {
+            id: Math.random().toString(36).substr(2, 9),
+            senderId: payload.senderId,
+            text: payload.transcript || '',
+            isTranslation: payload.isTranslation,
+            timestamp: Date.now()
+          }]
+        }));
+      }
     };
 
-    // 2. Peer Topology Updates -> Update my tree state
+    // 2. Peer Topology Updates
     net.onPeerUpdate = (me: Peer) => {
       set({ treeState: { ...me } });
-
-      // If I just became a Branch, start the Translation Engine
       if (me.role === NetworkRole.BRANCH) {
         branchService.startTranslationSession();
       }
     };
 
-    // 3. Raw Peer List Updates -> UI list
+    // 3. Raw Peer List Updates
     net.onRawPeerJoin = (peerId) => {
       set((state) => ({ 
         peers: state.peers.includes(peerId) ? state.peers : [...state.peers, peerId] 
@@ -80,12 +105,16 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
 
     if (isMicOn) {
       await audio.stopCapture();
-      set({ isMicOn: false });
+      set({ isMicOn: false, volumeLevel: 0 });
     } else {
       if (!treeState) return;
 
       // Start capturing Mic
       await audio.startCapture((base64Opus: string) => {
+        // Calculate rough volume for UI
+        const vol = calculateApproxVolume(base64Opus);
+        set({ volumeLevel: vol });
+
         // Construct standard payload
         const payload: AudioPayload = {
           senderId: treeState.id || 'unknown',
@@ -95,7 +124,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
           isTranslation: false
         };
 
-        // Broadcast to mesh (logic handles Up/Down routing)
+        // Broadcast to mesh
         net.broadcastAudio(payload);
       });
 
@@ -104,7 +133,36 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
   },
 
   leaveMeeting: () => {
-    // Hard reset for P2P stability
     window.location.reload();
   }
 }));
+
+// Helper to estimate volume from Base64 (assuming 16-bit PCM inside or similar enough for visual)
+// Note: This is a hack because we don't have access to the Raw float data here easily without changing AudioService signature significantly.
+function calculateApproxVolume(base64: string): number {
+  if (!base64) return 0;
+  // This is very rough, just checking string length or byte variation is not accurate for Opus, 
+  // but if the AudioService sends RAW Int16 (which it does in this prototype), this works perfectly.
+  // In `AudioService.ts`, we implemented `startCapture` sending `int16Data` encoded as base64.
+  // So we CAN decode it here to check volume.
+  
+  try {
+    const bin = atob(base64);
+    let sum = 0;
+    // Check every 10th sample to save CPU
+    for (let i = 0; i < bin.length; i += 20) {
+      // Little Endian Int16
+      const byte1 = bin.charCodeAt(i);
+      const byte2 = bin.charCodeAt(i + 1) || 0;
+      const val = (byte2 << 8) | byte1;
+      const signedVal = val >= 32768 ? val - 65536 : val;
+      sum += Math.abs(signedVal);
+    }
+    const avg = sum / (bin.length / 20);
+    // Normalize 0-32768 to 0-100
+    const normalized = Math.min(100, (avg / 1000) * 100); 
+    return normalized;
+  } catch (e) {
+    return 0;
+  }
+}

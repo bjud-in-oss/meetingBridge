@@ -1,16 +1,20 @@
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useMeetingStore } from './stores/useMeetingStore';
 import { LoginScreen } from './components/LoginScreen';
 import { TreeVisualizer } from './components/TreeVisualizer';
-import { NetworkRole } from './types/schema';
+import { TranscriptFeed } from './components/TranscriptFeed';
+import { MicButton } from './components/MicButton';
 
 export const App = () => {
   const connectionStatus = useMeetingStore(state => state.connectionStatus);
   const isMicOn = useMeetingStore(state => state.isMicOn);
+  const volumeLevel = useMeetingStore(state => state.volumeLevel);
   const toggleMic = useMeetingStore(state => state.toggleMic);
   const leaveMeeting = useMeetingStore(state => state.leaveMeeting);
   const treeState = useMeetingStore(state => state.treeState);
+
+  const [showDebug, setShowDebug] = useState(false);
 
   if (connectionStatus === 'IDLE' || connectionStatus === 'CONNECTING') {
     if (connectionStatus === 'CONNECTING') {
@@ -30,82 +34,104 @@ export const App = () => {
   }
 
   return (
-    <div style={{ fontFamily: 'system-ui, -apple-system, sans-serif', maxWidth: '800px', margin: '0 auto', paddingBottom: '100px' }}>
+    <div style={{ 
+      fontFamily: 'system-ui, -apple-system, sans-serif', 
+      maxWidth: '600px', 
+      margin: '0 auto', 
+      height: '100vh',
+      display: 'flex',
+      flexDirection: 'column',
+      background: 'white'
+    }}>
       {/* HEADER */}
       <header style={{ 
-        padding: '1rem 2rem', 
+        padding: '1rem', 
         borderBottom: '1px solid #eee', 
         display: 'flex', 
         justifyContent: 'space-between',
-        alignItems: 'center'
+        alignItems: 'center',
+        background: '#fff'
       }}>
-        <h1 style={{ margin: 0, fontSize: '1.2rem' }}>🌳 P2P Translator</h1>
-        <button 
-          onClick={leaveMeeting}
-          style={{
-            background: 'none',
-            border: '1px solid #ff3b30',
-            color: '#ff3b30',
-            padding: '0.5rem 1rem',
-            borderRadius: '4px',
-            cursor: 'pointer'
-          }}
-        >
-          Disconnect
-        </button>
-      </header>
-
-      <main style={{ padding: '2rem' }}>
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <h1 style={{ margin: 0, fontSize: '1.2rem' }}>🌳 Translator</h1>
           <span style={{ 
-            background: '#e3f2fd', 
-            color: '#0d47a1', 
-            padding: '4px 12px', 
-            borderRadius: '16px',
-            fontSize: '0.9rem'
-          }}>
+              background: '#e3f2fd', 
+              color: '#0d47a1', 
+              padding: '2px 8px', 
+              borderRadius: '12px',
+              fontSize: '0.75rem'
+            }}>
             {treeState?.myLanguage}
           </span>
         </div>
+        
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button 
+            onClick={() => setShowDebug(!showDebug)}
+            style={{
+              background: 'none',
+              border: '1px solid #ddd',
+              color: '#666',
+              padding: '0.4rem 0.8rem',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '0.8rem'
+            }}
+          >
+            {showDebug ? 'Hide Info' : 'Info'}
+          </button>
+          <button 
+            onClick={leaveMeeting}
+            style={{
+              background: 'none',
+              border: '1px solid #ff3b30',
+              color: '#ff3b30',
+              padding: '0.4rem 0.8rem',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '0.8rem'
+            }}
+          >
+            Exit
+          </button>
+        </div>
+      </header>
 
-        <TreeVisualizer />
-      </main>
-
-      {/* FOOTER CONTROLS */}
-      <footer style={{
-        position: 'fixed',
-        bottom: 0,
-        left: 0,
-        right: 0,
-        background: 'white',
-        borderTop: '1px solid #ddd',
-        padding: '1.5rem',
-        display: 'flex',
-        justifyContent: 'center',
-        boxShadow: '0 -4px 20px rgba(0,0,0,0.05)'
+      <main style={{ 
+        flex: 1, 
+        display: 'flex', 
+        flexDirection: 'column', 
+        padding: '1rem',
+        overflow: 'hidden',
+        position: 'relative'
       }}>
-        <button
-          onClick={toggleMic}
-          style={{
-            width: '80px',
-            height: '80px',
-            borderRadius: '50%',
-            background: isMicOn ? '#ff3b30' : '#34c759',
-            border: '4px solid white',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: '2rem',
-            color: 'white',
-            transition: 'all 0.2s',
-            transform: isMicOn ? 'scale(1.1)' : 'scale(1)'
-          }}
-        >
-          {isMicOn ? '⏹' : '🎙'}
-        </button>
-      </footer>
+        
+        {showDebug && (
+          <div style={{ marginBottom: '1rem', flexShrink: 0 }}>
+             <TreeVisualizer />
+          </div>
+        )}
+
+        <TranscriptFeed />
+
+        {/* BOTTOM CONTROLS */}
+        <div style={{
+          marginTop: 'auto',
+          display: 'flex',
+          justifyContent: 'center',
+          paddingTop: '1rem'
+        }}>
+          <MicButton 
+            isActive={isMicOn}
+            onClick={toggleMic}
+            volumeLevel={volumeLevel}
+          />
+        </div>
+        
+        <div style={{ textAlign: 'center', marginTop: '1rem', color: '#999', fontSize: '0.8rem' }}>
+           {isMicOn ? 'Listening...' : 'Tap to speak'}
+        </div>
+      </main>
     </div>
   );
 };

@@ -32,6 +32,10 @@ export interface AudioPayload {
   audioData: string;
   /** Whether this payload contains translated audio or original source audio */
   isTranslation: boolean;
+  /** Optional transcript of the audio chunk */
+  transcript?: string;
+  /** Indicates if this transcript segment is finalized */
+  isFinal?: boolean;
 }
 
 export interface MeetingState {
