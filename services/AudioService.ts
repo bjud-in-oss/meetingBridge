@@ -168,6 +168,9 @@ export class AudioService {
       this.mediaStream = null;
     }
     if (this.processor && this.source) {
+      // CRITICAL: Nullify callback to prevent firing after stop
+      this.processor.onaudioprocess = null;
+      
       this.source.disconnect();
       this.processor.disconnect();
       this.processor = null;

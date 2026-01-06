@@ -93,6 +93,8 @@ export class LanguageBranchService {
     this.sessionPromise = this.ai.live.connect({
       model: 'gemini-2.5-flash-native-audio-preview-12-2025',
       config: {
+        // Ensure we explicitly ask for AUDIO modality even if we suppress output, to satisfy API requirements
+        responseModalities: [Modality.AUDIO],
         tools: [{ functionDeclarations: [broadcastTranslationTool] }],
         systemInstruction: `You are a real-time speech translator engine.
         1. Listen to the incoming audio stream continuously.
@@ -107,25 +109,53 @@ export class LanguageBranchService {
             console.log('[Branch] Analyst Connected via WebSocket.');
             // Start capturing audio from hardware/socket
             this.audioService.startCapture((base64) => {
+                // STRICT CHECK: If we are not in Analyst mode, stop immediately.
                 if (this.currentMode !== 'ANALYST') return;
                 
+                // Capture local reference to promise
+                const currentSessionPromise = this.sessionPromise;
+                if (!currentSessionPromise) return;
+
                 // Use the promise to ensure session is ready before sending
-                this.sessionPromise?.then(sess => {
+                currentSessionPromise.then(sess => {
+                    // DOUBLE CHECK: Session might have closed while promise was resolving
+                    if (this.currentMode !== 'ANALYST') return;
+                    
                     try {
                         sess.sendRealtimeInput({
                             media: { mimeType: 'audio/pcm;rate=16000', data: base64 }
                         });
                     } catch (err) {
-                        console.error('Error sending audio chunk to Gemini:', err);
+                        // Suppress "WebSocket is already in CLOSING or CLOSED state" errors
+                        // indicating the session died unexpectedly.
+                        console.warn('Recoverable error sending audio chunk:', err);
                     }
+                }).catch(e => {
+                    console.warn('Session promise rejected:', e);
                 });
             });
         },
         onmessage: (msg: LiveServerMessage) => this.handleAnalystMessage(msg),
-        onerror: (e) => console.error('[Branch] Analyst Error', e),
-        onclose: () => console.log('[Branch] Analyst Closed')
+        onerror: (e) => {
+            console.error('[Branch] Analyst Error', e);
+            this.cleanupSession();
+        },
+        onclose: () => {
+            console.log('[Branch] Analyst Closed');
+            this.cleanupSession();
+        }
       }
     });
+  }
+
+  private cleanupSession() {
+      // If the socket closes unexpectedly, we should stop sending audio
+      // We don't necessarily want to fully stop (IDLE) if it's a temp flake,
+      // but for now, let's just stop the audio pump to prevent error spam.
+      this.sessionPromise = null;
+      // We do NOT set currentMode = IDLE here automatically, 
+      // because we might want to auto-reconnect logic later. 
+      // For now, this effectively stops the audio loop from doing work.
   }
 
   private handleAnalystMessage(msg: LiveServerMessage) {
@@ -160,7 +190,7 @@ export class LanguageBranchService {
                             response: { status: 'ok' }
                         }
                     });
-                });
+                }).catch(() => {});
             }
         }
     }
@@ -195,7 +225,14 @@ export class LanguageBranchService {
                     this.audioService.playAudioQueue(audioData);
                 }
             },
-            onerror: (e) => console.error('[Branch] Actor Error', e)
+            onerror: (e) => {
+                console.error('[Branch] Actor Error', e);
+                this.cleanupSession();
+            },
+            onclose: () => {
+                console.log('[Branch] Actor Closed');
+                this.cleanupSession();
+            }
         }
     });
   }
@@ -219,9 +256,13 @@ export class LanguageBranchService {
     const prompt = `[Speaker: ${voiceName}] [Emotion: ${payload.prosody.emotion}] Say: "${payload.text}"`;
 
     this.sessionPromise?.then(sess => {
-        sess.sendRealtimeInput({
-            content: [{ text: prompt }]
-        });
-    });
+        try {
+            sess.sendRealtimeInput({
+                content: [{ text: prompt }]
+            });
+        } catch(e) {
+            console.warn('Failed to send text to Actor:', e);
+        }
+    }).catch(() => {});
   }
 }
