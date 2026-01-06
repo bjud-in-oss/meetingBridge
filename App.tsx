@@ -5,6 +5,8 @@ import { LoginScreen } from './components/LoginScreen';
 import { TreeVisualizer } from './components/TreeVisualizer';
 import { TranscriptFeed } from './components/TranscriptFeed';
 import { MicButton } from './components/MicButton';
+import { AudioSettings } from './components/AudioSettings';
+import { NetworkRole } from './types/schema';
 
 export const App = () => {
   const connectionStatus = useMeetingStore(state => state.connectionStatus);
@@ -32,6 +34,17 @@ export const App = () => {
     }
     return <LoginScreen />;
   }
+
+  // Determine Role Mode
+  const isListener = treeState?.role === NetworkRole.LEAF;
+  const buttonMode = isListener ? 'SPEAKER' : 'MIC';
+  
+  const getStatusText = () => {
+    if (isListener) {
+      return isMicOn ? 'Receiving Audio & Translating...' : 'Tap to Join Audio Stream';
+    }
+    return isMicOn ? 'Listening & Analyzing...' : 'Tap to Start Speaking';
+  };
 
   return (
     <div style={{ 
@@ -63,22 +76,32 @@ export const App = () => {
             }}>
             {treeState?.myLanguage}
           </span>
+          <span style={{ 
+              background: '#f5f5f5', 
+              color: '#666', 
+              padding: '2px 8px', 
+              borderRadius: '12px',
+              fontSize: '0.75rem',
+              marginLeft: '4px'
+            }}>
+            {treeState?.role}
+          </span>
         </div>
         
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button 
             onClick={() => setShowDebug(!showDebug)}
             style={{
-              background: 'none',
+              background: showDebug ? '#e3f2fd' : 'none',
               border: '1px solid #ddd',
-              color: '#666',
+              color: showDebug ? '#0d47a1' : '#666',
               padding: '0.4rem 0.8rem',
               borderRadius: '4px',
               cursor: 'pointer',
               fontSize: '0.8rem'
             }}
           >
-            {showDebug ? 'Hide Info' : 'Info'}
+            Settings
           </button>
           <button 
             onClick={leaveMeeting}
@@ -107,8 +130,18 @@ export const App = () => {
       }}>
         
         {showDebug && (
-          <div style={{ marginBottom: '1rem', flexShrink: 0 }}>
-             <TreeVisualizer />
+          <div style={{ 
+            marginBottom: '1rem', 
+            flexShrink: 0, 
+            maxHeight: '40vh', 
+            overflowY: 'auto',
+            borderBottom: '1px solid #eee',
+            paddingBottom: '1rem'
+          }}>
+             <AudioSettings />
+             <div style={{ marginTop: '1rem' }}>
+                <TreeVisualizer />
+             </div>
           </div>
         )}
 
@@ -119,17 +152,19 @@ export const App = () => {
           marginTop: 'auto',
           display: 'flex',
           justifyContent: 'center',
-          paddingTop: '1rem'
+          paddingTop: '1rem',
+          flexDirection: 'column',
+          alignItems: 'center'
         }}>
           <MicButton 
             isActive={isMicOn}
             onClick={toggleMic}
             volumeLevel={volumeLevel}
+            mode={buttonMode}
           />
-        </div>
-        
-        <div style={{ textAlign: 'center', marginTop: '1rem', color: '#999', fontSize: '0.8rem' }}>
-           {isMicOn ? 'Listening...' : 'Tap to speak'}
+          <div style={{ marginTop: '1rem', color: '#999', fontSize: '0.9rem', fontWeight: 500 }}>
+             {getStatusText()}
+          </div>
         </div>
       </main>
     </div>

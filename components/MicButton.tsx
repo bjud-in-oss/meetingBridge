@@ -5,9 +5,10 @@ interface MicButtonProps {
   isActive: boolean;
   onClick: () => void;
   volumeLevel: number; // 0 to 100
+  mode?: 'MIC' | 'SPEAKER';
 }
 
-export const MicButton: React.FC<MicButtonProps> = ({ isActive, onClick, volumeLevel }) => {
+export const MicButton: React.FC<MicButtonProps> = ({ isActive, onClick, volumeLevel, mode = 'MIC' }) => {
   // Smooth out volume for animation
   const [visualVol, setVisualVol] = useState(0);
 
@@ -23,11 +24,23 @@ export const MicButton: React.FC<MicButtonProps> = ({ isActive, onClick, volumeL
   }, [volumeLevel]);
 
   // Calculate scales based on volume
-  const baseScale = 1;
-  const pulseScale = 1 + (visualVol / 100) * 0.5; // Up to 1.5x scale
+  // In Speaker mode, we might not have volume level inputs from the system easily, 
+  // so we might just pulse slightly if active or use the same logic if volume data is routed.
+  const pulseScale = 1 + (visualVol / 100) * 0.5; 
   
-  const auraColor = isActive ? 'rgba(52, 199, 89, 0.4)' : 'rgba(0,0,0,0)';
-  const mainColor = isActive ? '#34c759' : '#ff3b30';
+  // Visual Config
+  let mainColor, auraColor, icon;
+
+  if (mode === 'MIC') {
+    mainColor = isActive ? '#34c759' : '#ff3b30'; // Green : Red
+    auraColor = isActive ? 'rgba(52, 199, 89, 0.4)' : 'rgba(255, 59, 48, 0.1)';
+    icon = isActive ? '🎙' : '✕';
+  } else {
+    // SPEAKER MODE
+    mainColor = isActive ? '#007AFF' : '#8E8E93'; // Blue : Gray
+    auraColor = isActive ? 'rgba(0, 122, 255, 0.4)' : 'rgba(0,0,0,0)';
+    icon = isActive ? '🔊' : '🔈';
+  }
 
   return (
     <div style={{ position: 'relative', width: '100px', height: '100px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -38,7 +51,7 @@ export const MicButton: React.FC<MicButtonProps> = ({ isActive, onClick, volumeL
         height: '100%',
         borderRadius: '50%',
         background: auraColor,
-        transform: `scale(${pulseScale * 1.2})`,
+        transform: `scale(${isActive ? pulseScale * 1.2 : 1})`,
         transition: 'transform 0.1s linear, background 0.3s',
         opacity: isActive ? 0.6 : 0
       }} />
@@ -50,7 +63,7 @@ export const MicButton: React.FC<MicButtonProps> = ({ isActive, onClick, volumeL
         height: '100%',
         borderRadius: '50%',
         background: auraColor,
-        transform: `scale(${pulseScale})`,
+        transform: `scale(${isActive ? pulseScale : 1})`,
         transition: 'transform 0.1s linear, background 0.3s',
       }} />
 
@@ -76,7 +89,7 @@ export const MicButton: React.FC<MicButtonProps> = ({ isActive, onClick, volumeL
           transition: 'background 0.3s'
         }}
       >
-        {isActive ? '🎙' : '✕'}
+        {icon}
       </button>
     </div>
   );
