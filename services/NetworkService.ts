@@ -40,6 +40,8 @@ export class NetworkService {
   // Callbacks
   public onAudioReceived: (payload: AudioPayload) => void = () => {};
   public onPeerUpdate: (peer: Peer) => void = () => {};
+  public onRawPeerJoin: (peerId: string) => void = () => {};
+  public onRawPeerLeave: (peerId: string) => void = () => {};
 
   private constructor() {}
 
@@ -76,10 +78,12 @@ export class NetworkService {
 
     this.room.onPeerJoin((peerId) => {
       console.log(`[Net] Peer joined: ${peerId}`);
+      this.onRawPeerJoin(peerId);
       this.announceSelf();
     });
 
     this.room.onPeerLeave((peerId) => {
+      this.onRawPeerLeave(peerId);
       this.handlePeerDisconnect(peerId);
     });
 
