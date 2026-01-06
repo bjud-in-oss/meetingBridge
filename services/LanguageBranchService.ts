@@ -7,7 +7,7 @@ import { AudioService } from "./AudioService";
 // --- ANALYST TOOL DEFINITION ---
 const broadcastTranslationTool: FunctionDeclaration = {
   name: 'broadcast_translation',
-  description: 'Broadcasts the translated text and speaker metadata to the network.',
+  description: 'Broadcasts the translated text and speaker metadata to the network. Call this for EVERY speech segment detected.',
   parameters: {
     type: Type.OBJECT,
     properties: {
@@ -21,6 +21,7 @@ const broadcastTranslationTool: FunctionDeclaration = {
 };
 
 export class LanguageBranchService {
+  private static instance: LanguageBranchService;
   private network: NetworkService;
   private audioService: AudioService;
   private ai: GoogleGenAI;
@@ -37,10 +38,17 @@ export class LanguageBranchService {
     'Speaker D': 'Charon'
   };
 
-  constructor() {
+  private constructor() {
     this.network = NetworkService.getInstance();
     this.audioService = AudioService.getInstance();
     this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  }
+
+  public static getInstance(): LanguageBranchService {
+    if (!LanguageBranchService.instance) {
+      LanguageBranchService.instance = new LanguageBranchService();
+    }
+    return LanguageBranchService.instance;
   }
 
   public setLanguage(lang: string) {
@@ -54,6 +62,9 @@ export class LanguageBranchService {
   public async startSession() {
     const role = this.network.me.role;
 
+    // Stop any existing session first to avoid conflicts
+    await this.stopSession();
+
     if (role === NetworkRole.ROOT || role === NetworkRole.BRANCH) {
       // SENDER -> ANALYST
       await this.startAnalystSession();
@@ -64,10 +75,9 @@ export class LanguageBranchService {
   }
 
   public async stopSession() {
-    // Reset session
     this.currentMode = 'IDLE';
-    this.sessionPromise = null; 
-    // Note: Live API doesn't have a clean 'disconnect' on the client object in early preview, usually just stop sending.
+    this.sessionPromise = null;
+    await this.audioService.stopCapture();
   }
 
   // =================================================================
@@ -76,54 +86,60 @@ export class LanguageBranchService {
   // =================================================================
 
   private async startAnalystSession() {
-    if (this.currentMode === 'ANALYST') return;
     this.currentMode = 'ANALYST';
-
     console.log('[Branch] Starting Analyst Session...');
     
+    // Create the session promise
     this.sessionPromise = this.ai.live.connect({
       model: 'gemini-2.5-flash-native-audio-preview-12-2025',
       config: {
         tools: [{ functionDeclarations: [broadcastTranslationTool] }],
-        systemInstruction: `You are an expert simultaneous interpreter and prosody analyst.
-        1. Listen to the incoming audio.
-        2. Identify distinct speakers (Speaker A, Speaker B, etc.).
-        3. Translate the content to ${this.myLanguage}.
-        4. Call 'broadcast_translation' with the translation, speaker label, and detected emotion.
-        5. Do not output audio yourself, only use the tool.`,
+        systemInstruction: `You are a real-time speech translator engine.
+        1. Listen to the incoming audio stream continuously.
+        2. Whenever you hear speech, translate it to ${this.myLanguage}.
+        3. IMMEDIATELY call the 'broadcast_translation' function with the translation.
+        4. Detect the speaker (Speaker A/B) and emotion.
+        5. DO NOT output text or audio yourself. ONLY call the function.
+        6. Keep calling the function as the conversation progresses.`,
       },
       callbacks: {
         onopen: () => {
-            console.log('[Branch] Analyst Connected. Binding Audio...');
-            // Start capturing and feeding the model
-            this.audioService.startCapture(async (base64) => {
+            console.log('[Branch] Analyst Connected via WebSocket.');
+            // Start capturing audio from hardware/socket
+            this.audioService.startCapture((base64) => {
                 if (this.currentMode !== 'ANALYST') return;
-                const sess = await this.sessionPromise;
-                sess.sendRealtimeInput({
-                    media: { mimeType: 'audio/pcm;rate=16000', data: base64 }
+                
+                // Use the promise to ensure session is ready before sending
+                this.sessionPromise?.then(sess => {
+                    try {
+                        sess.sendRealtimeInput({
+                            media: { mimeType: 'audio/pcm;rate=16000', data: base64 }
+                        });
+                    } catch (err) {
+                        console.error('Error sending audio chunk to Gemini:', err);
+                    }
                 });
             });
         },
         onmessage: (msg: LiveServerMessage) => this.handleAnalystMessage(msg),
-        onerror: (e) => console.error('[Branch] Analyst Error', e)
+        onerror: (e) => console.error('[Branch] Analyst Error', e),
+        onclose: () => console.log('[Branch] Analyst Closed')
       }
     });
   }
 
   private handleAnalystMessage(msg: LiveServerMessage) {
-    // Check for Function Calls (The payload!)
     const toolCall = msg.toolCall;
     if (toolCall) {
         for (const fc of toolCall.functionCalls) {
             if (fc.name === 'broadcast_translation') {
                 const args = fc.args as any;
                 
-                // Construct Payload
                 const payload: TranslationPayload = {
                     type: 'TRANSLATION_DATA',
                     text: args.text,
-                    senderId: this.network.me.id,
-                    speakerLabel: args.speakerLabel || 'Unknown',
+                    senderId: this.network.me.id || 'ROOT',
+                    speakerLabel: args.speakerLabel || 'Speaker',
                     prosody: {
                         emotion: args.emotion || 'Neutral',
                         speed: args.speed || 1.0
@@ -132,16 +148,10 @@ export class LanguageBranchService {
                     isFinal: true
                 };
 
-                console.log('[Branch] Broadcasting Translation:', payload);
-                
-                // Broadcast to Mesh
-                // Note: We need to cast or update NetworkService to accept this new payload type
-                // For now, assume NetworkService handles 'packet' generically or we update it.
-                // Since NetworkService expects AudioPayload in strict typing, we might need to bypass or update it.
-                // Let's assume we use a generic method in NetworkService for custom packets.
+                // Broadcast to network AND local store
                 this.network.broadcastTranslation(payload);
 
-                // ACK the function call to keep Gemini happy
+                // ACK
                 this.sessionPromise?.then(sess => {
                     sess.sendToolResponse({
                         functionResponses: {
@@ -162,14 +172,8 @@ export class LanguageBranchService {
   // =================================================================
 
   private async startActorSession() {
-    if (this.currentMode === 'ACTOR') return;
     this.currentMode = 'ACTOR';
-    
     console.log('[Branch] Starting Actor Session...');
-
-    // We keep a persistent session to maintain context if needed, 
-    // OR we could do one-shot generateContent for each line. 
-    // Live API is better for latency.
     
     this.sessionPromise = this.ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -178,19 +182,20 @@ export class LanguageBranchService {
             speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } 
             },
-            systemInstruction: `You are a voice actor. 
-            I will send you text with a persona and emotion. 
-            You must read the text aloud using that persona and emotion.`
+            systemInstruction: `You are a Text-to-Speech engine.
+            I will send you text prompts.
+            Read them aloud immediately with the requested emotion.
+            Do not add conversational filler.`
         },
         callbacks: {
             onopen: () => console.log('[Branch] Actor Connected'),
             onmessage: (msg: LiveServerMessage) => {
-                // Receive Audio from Gemini -> Play to AudioService
                 const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
                 if (audioData) {
                     this.audioService.playAudioQueue(audioData);
                 }
-            }
+            },
+            onerror: (e) => console.error('[Branch] Actor Error', e)
         }
     });
   }
@@ -199,28 +204,24 @@ export class LanguageBranchService {
    * Called by NetworkService when a TranslationPayload arrives.
    */
   public async handleIncomingTranslation(payload: TranslationPayload) {
+    // If I'm the one who sent it (Analyst), I don't need to act it out.
     if (this.currentMode !== 'ACTOR') return;
 
-    // Map Speaker to Voice
     let voiceName = this.voiceMap[payload.speakerLabel];
     if (!voiceName) {
-        // Simple consistent hash assignment
         const voices = ['Kore', 'Fenrir', 'Puck', 'Charon', 'Zephyr'];
+        // Simple consistent hash
         const hash = payload.speakerLabel.split('').reduce((a,b)=>a+b.charCodeAt(0),0);
         voiceName = voices[hash % voices.length];
         this.voiceMap[payload.speakerLabel] = voiceName;
     }
 
-    const prompt = `
-    [Speaker: ${voiceName}]
-    [Emotion: ${payload.prosody.emotion}]
-    [Speed: ${payload.prosody.speed}]
-    Read this: "${payload.text}"`;
+    const prompt = `[Speaker: ${voiceName}] [Emotion: ${payload.prosody.emotion}] Say: "${payload.text}"`;
 
-    const sess = await this.sessionPromise;
-    // Send text as user input to trigger audio response
-    sess.sendRealtimeInput({
-        content: [{ text: prompt }]
+    this.sessionPromise?.then(sess => {
+        sess.sendRealtimeInput({
+            content: [{ text: prompt }]
+        });
     });
   }
 }

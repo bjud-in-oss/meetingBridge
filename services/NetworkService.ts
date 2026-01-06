@@ -1,7 +1,7 @@
 
 import { joinRoom, Room } from 'trystero';
 import { NetworkRole, Peer, AudioPayload, TranslationPayload } from '../types/schema';
-import { LanguageBranchService } from './LanguageBranchService'; // Circular dep workaround needed in real app
+import { LanguageBranchService } from './LanguageBranchService'; 
 
 // Internal packet types
 type PacketType = 'ANNOUNCE' | 'CONNECTION_REQ' | 'CONNECTION_ACK' | 'AUDIO' | 'TRANSLATION_DATA';
@@ -97,7 +97,7 @@ export class NetworkService {
     }
   }
 
-  // --- HEARTBEAT & DISCOVERY (Same as previous, abbreviated for brevity in this specific patch but fully functional) ---
+  // --- HEARTBEAT & DISCOVERY ---
   private startHeartbeat() {
     this.stopHeartbeat();
     this.heartbeatInterval = setInterval(() => {
@@ -193,7 +193,11 @@ export class NetworkService {
   }
 
   public broadcastTranslation(payload: TranslationPayload) {
+      // 1. Send to network
       this.routeData('TRANSLATION_DATA', payload);
+      
+      // 2. IMPORTANT: Echo back to myself so I see the transcript too
+      this.onTranslationReceived(payload);
   }
 
   private routeData(type: PacketType, payload: any) {
@@ -208,7 +212,6 @@ export class NetworkService {
 
   private handleAudio(senderId: string, payload: AudioPayload) {
       this.onAudioReceived(payload);
-      // Re-broadcast logic for raw audio if needed
   }
 
   private handleTranslationData(payload: TranslationPayload) {

@@ -53,7 +53,8 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     set({ connectionStatus: 'CONNECTING' });
 
     const net = NetworkService.getInstance();
-    const branchService = new LanguageBranchService();
+    // Use Singleton
+    const branchService = LanguageBranchService.getInstance();
     branchService.setLanguage(language);
 
     // --- SUBSCRIPTIONS ---
@@ -67,6 +68,8 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
 
     // 2. Structured Translation Received (Text Distribution Mode)
     net.onTranslationReceived = (payload: TranslationPayload) => {
+        console.log('[Store] Translation Received:', payload);
+        
         // A. Visual Transcript
         set(state => ({
             transcripts: [...state.transcripts, {
@@ -87,7 +90,6 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     // 3. Topology Updates
     net.onPeerUpdate = (me: Peer) => {
       set({ treeState: { ...me } });
-      // Restart session if role changes (unlikely in this ver, but safe)
       if (get().isMicOn) {
           branchService.startSession();
       }
@@ -108,24 +110,15 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
 
   toggleMic: async () => {
     const { isMicOn, treeState } = get();
-    const audio = AudioService.getInstance();
-    const branchService = new LanguageBranchService(); // Grab singleton logically, though currently new instance. 
-    // Fix: We should probably singleton BranchService or attach to window for this prototype, 
-    // but effectively we just need to trigger the startSession on the *existing* active service logic.
-    // Ideally BranchService connects to NetworkService singleton internally.
-    
-    // For this refactor, we just call the method on a new instance which shares state via Singletons inside it.
+    // Use Singleton
+    const branchService = LanguageBranchService.getInstance(); 
     
     if (isMicOn) {
-      await audio.stopCapture();
       await branchService.stopSession();
       set({ isMicOn: false, volumeLevel: 0 });
     } else {
       if (!treeState) return;
-      
-      // Start the Logic (Analyst or Actor)
       await branchService.startSession();
-
       set({ isMicOn: true });
     }
   },
