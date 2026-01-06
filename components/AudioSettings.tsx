@@ -6,12 +6,13 @@ import { AudioDevice } from '../types/schema';
 
 export const AudioSettings = () => {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
-  const { audioSettings, updateAudioSettings } = useMeetingStore(state => ({
-    audioSettings: state.audioSettings,
-    updateAudioSettings: state.updateAudioSettings
-  }));
+  
+  // Use a safer selector pattern
+  const audioSettings = useMeetingStore(state => state.audioSettings);
+  const updateAudioSettings = useMeetingStore(state => state.updateAudioSettings);
 
   useEffect(() => {
+    // Safety call
     AudioService.getInstance().getDevices().then(setDevices);
   }, []);
 
@@ -25,6 +26,7 @@ export const AudioSettings = () => {
   };
 
   const handleExternalChange = (key: string, value: any) => {
+    if (!audioSettings) return;
     const newSettings = { ...audioSettings, [key]: value };
     updateAudioSettings(newSettings);
     
@@ -37,6 +39,8 @@ export const AudioSettings = () => {
 
   const inputs = devices.filter(d => d.kind === 'audioinput');
   const outputs = devices.filter(d => d.kind === 'audiooutput');
+
+  if (!audioSettings) return <div>Loading Settings...</div>;
 
   return (
     <div style={{

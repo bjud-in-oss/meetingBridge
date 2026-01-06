@@ -39,6 +39,10 @@ export class AudioService {
 
   public async getDevices(): Promise<AudioDevice[]> {
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+          console.warn('navigator.mediaDevices not supported');
+          return [];
+      }
       // Request permission first to get labels
       await navigator.mediaDevices.getUserMedia({ audio: true });
       const devices = await navigator.mediaDevices.enumerateDevices();
@@ -121,6 +125,11 @@ export class AudioService {
         };
     } else {
         // HARDWARE MODE
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            alert('Audio capture not supported in this environment (likely due to http vs https).');
+            return;
+        }
+
         console.log(`[Audio] Capturing from Mic (${this.currentInputDeviceId})...`);
         const ctx = this.getContext();
         if (ctx.state === 'suspended') await ctx.resume();

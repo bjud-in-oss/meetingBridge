@@ -1,7 +1,6 @@
 
 import { joinRoom, Room } from 'trystero';
 import { NetworkRole, Peer, AudioPayload, TranslationPayload } from '../types/schema';
-import { LanguageBranchService } from './LanguageBranchService'; 
 
 // Internal packet types
 type PacketType = 'ANNOUNCE' | 'CONNECTION_REQ' | 'CONNECTION_ACK' | 'AUDIO' | 'TRANSLATION_DATA';
@@ -215,7 +214,7 @@ export class NetworkService {
   }
 
   private handleTranslationData(payload: TranslationPayload) {
-      // 1. Process locally (Text-to-Speech via BranchService happens via callback)
+      // 1. Process locally
       this.onTranslationReceived(payload);
 
       // 2. Forward Downstream if Branch
