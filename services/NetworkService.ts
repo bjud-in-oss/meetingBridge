@@ -57,18 +57,10 @@ export class NetworkService {
   public connect(roomId: string, displayName: string, language: string, forceRoot: boolean = false) {
     if (this.room) this.leave();
     
-    // FIX: Use reliable public relays that don't require Auth
-    const config = {
-        appId: this.appId,
-        relayUrls: [
-            'wss://nos.lol',
-            'wss://relay.snort.social',
-            'wss://relay.damus.io', // High traffic but usually works
-            'wss://relay.bitcoiner.social'
-        ]
-    };
-
-    this.room = joinRoom(config, roomId);
+    // FIX: Revert to default strategy (BitTorrent/Tracker).
+    // Nostr relays (relayUrls) impose strict rate limits which block our audio/data stream.
+    // The default strategy is much more robust for high-frequency updates.
+    this.room = joinRoom({ appId: this.appId }, roomId);
 
     this.me.displayName = displayName;
     this.me.myLanguage = language;
@@ -217,7 +209,7 @@ export class NetworkService {
   private routeData(type: PacketType, payload: any) {
      const packet: NetworkPacket = { type, senderId: this.getMyId(), payload };
      
-     // FIX: Broadcast to EVERYONE to ensure delivery even if topology is partial.
+     // Broadcast to EVERYONE to ensure delivery even if topology is partial.
      this.sendPacket(packet);
   }
 

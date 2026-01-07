@@ -13,8 +13,8 @@ const broadcastTranslationTool: FunctionDeclaration = {
     properties: {
       text: { type: Type.STRING, description: 'The text content of what was said.' },
       speakerLabel: { type: Type.STRING, description: 'The identified speaker label.' },
-      emotion: { type: Type.STRING, description: 'The detected emotional tone.' },
-      speed: { type: Type.NUMBER, description: 'Speech speed.' }
+      emotion: { type: Type.STRING, description: 'The detected emotional tone (e.g. Joy, Anger, Sorrow, Excitement).' },
+      speed: { type: Type.NUMBER, description: 'Speech speed relative to normal (0.5 - 2.0).' }
     },
     required: ['text', 'speakerLabel', 'emotion']
   }
@@ -74,12 +74,12 @@ export class LanguageBranchService {
       config: {
         responseModalities: [Modality.AUDIO],
         tools: [{ functionDeclarations: [broadcastTranslationTool] }],
-        systemInstruction: `You are an expert speech analyst.
-        1. Listen to the audio stream.
-        2. Transcribe accurately what is said.
-        3. Call 'broadcast_translation' with the transcription.
-        4. Detect emotions accurately.
-        5. Do NOT speak. Only listen and call the function.`,
+        systemInstruction: `You are an expert Speech Analyst.
+        1. Listen to the user's audio stream intently.
+        2. Transcribe the speech accurately.
+        3. DETECT EMOTION: Be very sensitive to the speaker's tone (Happy, Sad, Urgent, Bored).
+        4. Call 'broadcast_translation' immediately after every phrase.
+        5. Do NOT speak yourself. Your only output is the tool call.`,
       },
       callbacks: {
         onopen: () => {
@@ -160,10 +160,13 @@ export class LanguageBranchService {
         config: {
             responseModalities: [Modality.AUDIO],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
-            systemInstruction: `You are a professional interpreter. 
-            Your job is to receive text, translate it to the requested language, and speak it aloud.
-            Speak naturally, mirroring the emotion of the original speaker.
-            Do NOT say "Translation:" or "Here is the text". Just speak the translation.`
+            systemInstruction: `You are a Voice Actor and Translator.
+            I will send you text in various languages.
+            You MUST:
+            1. Translate the text into ${this.myLanguage}.
+            2. Speak the TRANSLATION aloud with high expressiveness.
+            3. Match the requested emotion (e.g. if I say "Anger", sound angry).
+            4. Do NOT say "Translation:" or "He said:". Just act out the translated text.`
         },
         callbacks: {
             onopen: () => console.log('[Branch] Actor Connected'),
@@ -182,23 +185,16 @@ export class LanguageBranchService {
   // =================================================================
 
   public async handleIncomingTranslation(payload: TranslationPayload) {
-    // 1. Prevent Self-Echo: Do not play back my own words
-    if (payload.senderId === this.network.me.id) {
-        return;
-    }
+    // 1. Prevent Self-Echo
+    if (payload.senderId === this.network.me.id) return;
 
     if (this.currentMode === 'ACTOR') {
         // 2. FORCE TRANSLATION TO MY LANGUAGE
-        // Use a prompt that forces Gemini to translate the incoming text to the user's selected language.
-        const prompt = `Translate the following text into ${this.myLanguage} and speak it aloud immediately with ${payload.prosody.emotion} emotion. The text is: "${payload.text}"`;
+        const prompt = `Speaker is feeling ${payload.prosody.emotion}. Translate and speak this: "${payload.text}"`;
         
         this.sessionPromise?.then(sess => {
             try { sess.sendRealtimeInput({ content: [{ text: prompt }] }); } catch(e) {}
         });
-    } else {
-        // Fallback if we are in Analyst mode (Mic Hot) - minimal feedback to avoid distraction
-        // or potentially speak nicely via browser if needed.
-        // For now, let's silence it to prevent feedback loops while speaking.
     }
   }
 }

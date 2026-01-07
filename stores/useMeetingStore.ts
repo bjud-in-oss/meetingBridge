@@ -61,9 +61,13 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
 
     // 1. Raw Audio Received (Legacy/Passthrough)
     net.onAudioReceived = (payload: AudioPayload) => {
-      if (payload.audioData && payload.audioData.length > 0) {
+       // DISABLED for Translation Mode: 
+       // We only want to hear the translated AI voice, not the original speaker.
+       /*
+       if (payload.audioData && payload.audioData.length > 0) {
         AudioService.getInstance().playAudioQueue(payload.audioData);
-      }
+       }
+       */
     };
 
     // 2. Structured Translation Received (Text Distribution Mode)
@@ -89,47 +93,4 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
 
     // 3. Topology Updates
     net.onPeerUpdate = (me: Peer) => {
-      set({ treeState: { ...me } });
-      if (get().isMicOn) {
-          branchService.startSession();
-      }
-    };
-
-    net.onRawPeerJoin = (peerId) => {
-      set((state) => ({ peers: state.peers.includes(peerId) ? state.peers : [...state.peers, peerId] }));
-    };
-
-    net.onRawPeerLeave = (peerId) => {
-      set((state) => ({ peers: state.peers.filter(id => id !== peerId) }));
-    };
-
-    net.connect(roomId, displayName, language, forceRoot);
-
-    set({ connectionStatus: 'CONNECTED', treeState: net.me });
-  },
-
-  toggleMic: async () => {
-    const { isMicOn, treeState } = get();
-    // CRITICAL: Resume Audio Context on User Interaction
-    await AudioService.getInstance().resumeContext();
-
-    const branchService = LanguageBranchService.getInstance(); 
-    
-    if (isMicOn) {
-      await branchService.stopSession();
-      set({ isMicOn: false, volumeLevel: 0 });
-    } else {
-      if (!treeState) return;
-      await branchService.startSession();
-      set({ isMicOn: true });
-    }
-  },
-
-  updateAudioSettings: (settings) => {
-      set(state => ({ audioSettings: { ...state.audioSettings, ...settings } }));
-  },
-
-  leaveMeeting: () => {
-    window.location.reload();
-  }
-}));
+      set({ treeState: {
