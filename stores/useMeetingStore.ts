@@ -56,7 +56,6 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     set({ connectionStatus: 'CONNECTING' });
 
     const net = NetworkService.getInstance();
-    // Use Singleton
     const branchService = LanguageBranchService.getInstance();
     branchService.setLanguage(language);
 
@@ -67,7 +66,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         set(state => ({
             transcripts: [...state.transcripts, {
                 id: Math.random().toString(36).substr(2, 9),
-                senderId: 'translator-local', // Special ID for Orange Color
+                senderId: 'translator-local',
                 text: translatedText,
                 speakerLabel: 'Interpreter',
                 isTranslation: true,
@@ -90,7 +89,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
             transcripts: [...state.transcripts, {
                 id: Math.random().toString(36).substr(2, 9),
                 senderId: payload.senderId,
-                text: payload.text || '...', // Fallback if empty
+                text: payload.text || '...', 
                 speakerLabel: payload.speakerLabel,
                 emotion: payload.prosody.emotion,
                 isTranslation: true,
@@ -105,11 +104,18 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     // D. Topology Updates
     net.onPeerUpdate = (me: Peer) => {
       set({ treeState: { ...me } });
-      if (get().isMicOn) {
+      
+      // STABILIZATION FIX: Only switch sessions if strictly necessary
+      // This prevents onPeerUpdate (triggered by network heartbeats) from killing active sessions
+      const micOn = get().isMicOn;
+      
+      // If Mic is ON, we ensure Analyst session is running (idempotent)
+      if (micOn) {
           branchService.startSession();
-      } else {
-          // If Mic is OFF, we should ensure we are in Actor/Listener mode if not already
-           branchService.stopSession(); // This toggles to Actor mode
+      } 
+      // If Mic is OFF, we ensure Actor session is running (idempotent)
+      else {
+          branchService.stopSession();
       }
     };
 
@@ -134,12 +140,14 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     const branchService = LanguageBranchService.getInstance(); 
     
     if (isMicOn) {
-      await branchService.stopSession(); // Switches to Actor (Listening)
+      // User is turning MIC OFF -> Become Listener (Actor)
       set({ isMicOn: false, volumeLevel: 0 });
+      await branchService.stopSession(); 
     } else {
+      // User is turning MIC ON -> Become Speaker (Analyst)
       if (!treeState) return;
-      await branchService.startSession(); // Switches to Analyst (Speaking)
       set({ isMicOn: true });
+      await branchService.startSession(); 
     }
   },
 

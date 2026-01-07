@@ -55,7 +55,6 @@ export class LanguageBranchService {
 
   public async startSession() {
     // START SPEAKING (Analyst Mode)
-    // Guard: Prevent re-initialization if already in Analyst mode
     if (this.currentMode === 'ANALYST') return;
 
     await this.cleanupSession();
@@ -64,7 +63,6 @@ export class LanguageBranchService {
 
   public async stopSession() {
     // STOP SPEAKING -> START LISTENING (Actor Mode)
-    // Guard: Prevent re-initialization if already in Actor mode
     if (this.currentMode === 'ACTOR') return;
     
     await this.cleanupSession();
@@ -115,7 +113,6 @@ export class LanguageBranchService {
             this.audioService.startCapture((base64) => {
                 if (this.currentMode !== 'ANALYST') return;
                 
-                // Intelligence
                 this.sessionPromise?.then(sess => {
                     if (this.currentMode !== 'ANALYST') return;
                     try {
@@ -145,7 +142,7 @@ export class LanguageBranchService {
                     senderId: this.network.me.id || 'ROOT',
                     speakerLabel: args.speakerLabel || 'Speaker',
                     prosody: { emotion: args.emotion || 'Neutral', speed: 1.0 },
-                    targetLanguage: 'source', // We send source text, receiver translates
+                    targetLanguage: 'source', 
                     isFinal: true
                 };
 
@@ -173,44 +170,40 @@ export class LanguageBranchService {
     if (this.currentMode === 'ACTOR') return;
     this.currentMode = 'ACTOR';
     console.log('[Branch] Starting Actor Session...');
-    this.currentTranslationText = ''; // Reset buffer
+    this.currentTranslationText = ''; 
     
     this.sessionPromise = this.ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
             responseModalities: [Modality.AUDIO],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
-            outputAudioTranscription: {}, // Enable transcription of the translation
-            systemInstruction: `You are a professional Voice Actor and Synchronous Interpreter.
-            Your Task:
-            1. I will send you text (which may be in any language).
-            2. You MUST translate it immediately into ${this.myLanguage}.
-            3. Speak the TRANSLATION aloud.
-            4. ACT out the text. Use dynamic pitch, speed, and tone to match the requested emotion.
-            5. NEVER repeat the source text. NEVER say "The translation is...". JUST ACT.
-            6. If the input is already in ${this.myLanguage}, just act it out with high quality.
+            outputAudioTranscription: {}, 
+            systemInstruction: `You are a professional Synchronous Interpreter.
+            Task:
+            1. I will send you text.
+            2. Translate it into ${this.myLanguage}.
+            3. Speak ONLY the translation with the requested emotion.
             `
         },
         callbacks: {
-            onopen: () => console.log('[Branch] Actor Connected'),
+            onopen: () => console.log('[Branch] Actor Connected (Ready for Input)'),
             onmessage: (msg: LiveServerMessage) => {
-                // 1. Play Audio
+                // Audio Output
                 const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
                 if (audioData) {
-                    // console.log('[Branch] Actor Audio Received, playing...');
                     this.audioService.playAudioQueue(audioData);
                 }
 
-                // 2. Capture Transcription (The Translated Text)
+                // Transcription of the Translation
                 if (msg.serverContent?.outputTranscription) {
                     const text = msg.serverContent.outputTranscription.text;
                     this.currentTranslationText += text;
                 }
 
-                // 3. Turn Complete - Emit the full translation
+                // Turn Complete
                 if (msg.serverContent?.turnComplete) {
                     if (this.currentTranslationText.trim()) {
-                        console.log('[Branch] Translation Generated:', this.currentTranslationText);
+                        console.log('[Branch] Translation Output:', this.currentTranslationText);
                         this.onTranslationGenerated(this.currentTranslationText.trim());
                         this.currentTranslationText = '';
                     }
@@ -227,33 +220,33 @@ export class LanguageBranchService {
   // =================================================================
 
   public async handleIncomingTranslation(payload: TranslationPayload) {
-    // 1. Prevent Self-Echo
+    // 1. Prevent Self-Echo (Speaker doesn't hear their own translation)
     if (payload.senderId === this.network.me.id) return;
 
     if (this.currentMode === 'ACTOR') {
-        // 2. FORCE TRANSLATION TO MY LANGUAGE
-        const prompt = `
-        [INSTRUCTION]
-        Source Text: "${payload.text}"
-        Target Language: ${this.myLanguage}
-        Required Emotion: ${payload.prosody.emotion}
-        Task: Translate the source text to the target language and speak it with the required emotion.
-        `;
-        
-        console.log('[Branch] Requesting Translation Actor:', prompt.replace(/\s+/g, ' ').trim());
+        const prompt = `Translate to ${this.myLanguage}: "${payload.text}"`;
+        console.log('[Branch] Injecting Text to Actor:', prompt);
 
-        this.sessionPromise?.then(sess => {
-            try { 
-                // Fix: Correct structure for text input to Live API
-                sess.sendRealtimeInput({ 
-                    content: [
-                        { parts: [{ text: prompt }] }
-                    ] 
-                }); 
-            } catch(e) {
-                console.error('[Branch] Failed to send translation request', e);
-            }
-        });
+        const sess = await this.sessionPromise;
+        if (!sess) return;
+
+        try {
+            // CRITICAL FIX: Correct "User Turn" structure for Gemini Live
+            // This structure mimics a user speaking or typing to the model
+            sess.sendRealtimeInput({
+                content: [
+                    { 
+                        role: 'user', 
+                        parts: [{ text: prompt }] 
+                    }
+                ]
+            });
+            
+            // Note: Sending text usually implies end_of_turn, but if the API supports it,
+            // we could enforce it. For now, the content injection is usually sufficient.
+        } catch(e) {
+            console.error('[Branch] Failed to send translation request', e);
+        }
     }
   }
 }
