@@ -50,6 +50,9 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
   },
 
   joinMeeting: (roomId, displayName, language, forceRoot) => {
+    // 1. Resume Audio Context immediately on user interaction (Click Join)
+    AudioService.getInstance().resumeContext();
+    
     set({ connectionStatus: 'CONNECTING' });
 
     const net = NetworkService.getInstance();
@@ -57,24 +60,32 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     const branchService = LanguageBranchService.getInstance();
     branchService.setLanguage(language);
 
-    // --- SUBSCRIPTIONS ---
+    // --- SETUP CALLBACKS ---
 
-    // 1. Raw Audio Received (Legacy/Passthrough)
-    net.onAudioReceived = (payload: AudioPayload) => {
-       // DISABLED for Translation Mode: 
-       // We only want to hear the translated AI voice, not the original speaker.
-       /*
-       if (payload.audioData && payload.audioData.length > 0) {
-        AudioService.getInstance().playAudioQueue(payload.audioData);
-       }
-       */
+    // A. Handle Local Translations (ACTOR MODE OUTPUT)
+    branchService.onTranslationGenerated = (translatedText: string) => {
+        set(state => ({
+            transcripts: [...state.transcripts, {
+                id: Math.random().toString(36).substr(2, 9),
+                senderId: 'translator-local', // Special ID for Orange Color
+                text: translatedText,
+                speakerLabel: 'Interpreter',
+                isTranslation: true,
+                timestamp: Date.now()
+            }]
+        }));
     };
 
-    // 2. Structured Translation Received (Text Distribution Mode)
+    // B. Raw Audio Received (Legacy/Passthrough)
+    net.onAudioReceived = (payload: AudioPayload) => {
+       // DISABLED for Translation Mode
+    };
+
+    // C. Structured Translation Received (Text Distribution Mode)
     net.onTranslationReceived = (payload: TranslationPayload) => {
         console.log('[Store] Translation Received:', payload);
         
-        // A. Visual Transcript
+        // 1. Visual Transcript (Source Text)
         set(state => ({
             transcripts: [...state.transcripts, {
                 id: Math.random().toString(36).substr(2, 9),
@@ -87,15 +98,18 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
             }]
         }));
 
-        // B. Act it out (TTS) via BranchService
+        // 2. Act it out (TTS) via BranchService
         branchService.handleIncomingTranslation(payload);
     };
 
-    // 3. Topology Updates
+    // D. Topology Updates
     net.onPeerUpdate = (me: Peer) => {
       set({ treeState: { ...me } });
       if (get().isMicOn) {
           branchService.startSession();
+      } else {
+          // If Mic is OFF, we should ensure we are in Actor/Listener mode if not already
+           branchService.stopSession(); // This toggles to Actor mode
       }
     };
 
@@ -120,11 +134,11 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     const branchService = LanguageBranchService.getInstance(); 
     
     if (isMicOn) {
-      await branchService.stopSession();
+      await branchService.stopSession(); // Switches to Actor (Listening)
       set({ isMicOn: false, volumeLevel: 0 });
     } else {
       if (!treeState) return;
-      await branchService.startSession();
+      await branchService.startSession(); // Switches to Analyst (Speaking)
       set({ isMicOn: true });
     }
   },

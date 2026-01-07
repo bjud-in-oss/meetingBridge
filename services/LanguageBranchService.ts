@@ -29,6 +29,12 @@ export class LanguageBranchService {
   private sessionPromise: Promise<any> | null = null;
   private myLanguage: string = 'en-US';
   private currentMode: 'ANALYST' | 'ACTOR' | 'IDLE' = 'IDLE';
+  
+  // New Callback for UI
+  public onTranslationGenerated: (text: string) => void = () => {};
+  
+  // Buffers for transcription
+  private currentTranslationText: string = '';
 
   private constructor() {
     this.network = NetworkService.getInstance();
@@ -167,12 +173,14 @@ export class LanguageBranchService {
     if (this.currentMode === 'ACTOR') return;
     this.currentMode = 'ACTOR';
     console.log('[Branch] Starting Actor Session...');
+    this.currentTranslationText = ''; // Reset buffer
     
     this.sessionPromise = this.ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
             responseModalities: [Modality.AUDIO],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+            outputAudioTranscription: {}, // Enable transcription of the translation
             systemInstruction: `You are a professional Voice Actor and Synchronous Interpreter.
             Your Task:
             1. I will send you text (which may be in any language).
@@ -186,8 +194,23 @@ export class LanguageBranchService {
         callbacks: {
             onopen: () => console.log('[Branch] Actor Connected'),
             onmessage: (msg: LiveServerMessage) => {
+                // 1. Play Audio
                 const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
                 if (audioData) this.audioService.playAudioQueue(audioData);
+
+                // 2. Capture Transcription (The Translated Text)
+                if (msg.serverContent?.outputTranscription) {
+                    const text = msg.serverContent.outputTranscription.text;
+                    this.currentTranslationText += text;
+                }
+
+                // 3. Turn Complete - Emit the full translation
+                if (msg.serverContent?.turnComplete) {
+                    if (this.currentTranslationText.trim()) {
+                        this.onTranslationGenerated(this.currentTranslationText.trim());
+                        this.currentTranslationText = '';
+                    }
+                }
             },
             onerror: (e) => console.error('[Branch] Actor Error', e),
             onclose: () => console.log('[Branch] Actor Closed')
