@@ -93,4 +93,47 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
 
     // 3. Topology Updates
     net.onPeerUpdate = (me: Peer) => {
-      set({ treeState: {
+      set({ treeState: { ...me } });
+      if (get().isMicOn) {
+          branchService.startSession();
+      }
+    };
+
+    net.onRawPeerJoin = (peerId) => {
+      set((state) => ({ peers: state.peers.includes(peerId) ? state.peers : [...state.peers, peerId] }));
+    };
+
+    net.onRawPeerLeave = (peerId) => {
+      set((state) => ({ peers: state.peers.filter(id => id !== peerId) }));
+    };
+
+    net.connect(roomId, displayName, language, forceRoot);
+
+    set({ connectionStatus: 'CONNECTED', treeState: net.me });
+  },
+
+  toggleMic: async () => {
+    const { isMicOn, treeState } = get();
+    // CRITICAL: Resume Audio Context on User Interaction
+    await AudioService.getInstance().resumeContext();
+
+    const branchService = LanguageBranchService.getInstance(); 
+    
+    if (isMicOn) {
+      await branchService.stopSession();
+      set({ isMicOn: false, volumeLevel: 0 });
+    } else {
+      if (!treeState) return;
+      await branchService.startSession();
+      set({ isMicOn: true });
+    }
+  },
+
+  updateAudioSettings: (settings) => {
+      set(state => ({ audioSettings: { ...state.audioSettings, ...settings } }));
+  },
+
+  leaveMeeting: () => {
+    window.location.reload();
+  }
+}));
