@@ -34,6 +34,34 @@ export class AudioService {
   }
 
   // =================================================================
+  // CONTEXT MANAGEMENT
+  // =================================================================
+
+  private getContext(): AudioContext {
+    if (!this.audioContext) {
+      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
+        sampleRate: this.SAMPLE_RATE,
+      });
+      // Apply initial sink ID if set
+      if (this.currentOutputDeviceId !== 'default' && 'setSinkId' in this.audioContext) {
+          (this.audioContext as any).setSinkId(this.currentOutputDeviceId);
+      }
+    }
+    return this.audioContext;
+  }
+
+  /**
+   * Must be called from a UI event handler (click/touch) to unlock audio on browsers.
+   */
+  public async resumeContext(): Promise<void> {
+    const ctx = this.getContext();
+    if (ctx.state === 'suspended') {
+      await ctx.resume();
+      console.log('[AudioService] AudioContext resumed');
+    }
+  }
+
+  // =================================================================
   // DEVICE MANAGEMENT
   // =================================================================
 
@@ -61,17 +89,14 @@ export class AudioService {
 
   public setInputDevice(deviceId: string) {
     this.currentInputDeviceId = deviceId;
-    // If currently capturing, restart to apply change
     if (this.mediaStream) {
-      // NOTE: This assumes consumer will restart capture. 
-      // We could emit an event, but simplest is to store state for next startCapture.
+       // Ideally trigger a restart here if active
     }
   }
 
   public setOutputDevice(deviceId: string) {
     this.currentOutputDeviceId = deviceId;
     if (this.audioContext && 'setSinkId' in this.audioContext) {
-        // Experimental feature for AudioContext output routing
         (this.audioContext as any).setSinkId(deviceId)
             .catch((e: any) => console.warn('setSinkId failed', e));
     }
@@ -113,11 +138,12 @@ export class AudioService {
   // =================================================================
 
   public async startCapture(onData: (base64: string) => void): Promise<void> {
+    await this.resumeContext();
+
     if (this.useExternalInput && this.inputSocket) {
         // SOCKET MODE
         console.log('[Audio] Capturing from WebSocket...');
         this.inputSocket.onmessage = (event) => {
-            // Assume incoming is raw PCM ArrayBuffer or Blob
             if (event.data instanceof ArrayBuffer) {
                const base64 = this.arrayBufferToBase64(event.data);
                onData(base64);
@@ -126,20 +152,18 @@ export class AudioService {
     } else {
         // HARDWARE MODE
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            alert('Audio capture not supported in this environment (likely due to http vs https).');
+            alert('Audio capture not supported in this environment.');
             return;
         }
 
         console.log(`[Audio] Capturing from Mic (${this.currentInputDeviceId})...`);
         const ctx = this.getContext();
-        if (ctx.state === 'suspended') await ctx.resume();
-
-        // Stop existing
+        
         await this.stopCapture();
 
         this.mediaStream = await navigator.mediaDevices.getUserMedia({ 
             audio: { 
-              deviceId: this.currentInputDeviceId ? { exact: this.currentInputDeviceId } : undefined,
+              deviceId: this.currentInputDeviceId !== 'default' ? { exact: this.currentInputDeviceId } : undefined,
               echoCancellation: true, 
               sampleRate: this.SAMPLE_RATE
             } 
@@ -150,7 +174,6 @@ export class AudioService {
 
         this.processor.onaudioprocess = (e) => {
             const inputData = e.inputBuffer.getChannelData(0);
-            // Convert to Int16 for Gemini
             const int16Data = this.floatTo16BitPCM(inputData);
             const base64 = this.arrayBufferToBase64(int16Data.buffer);
             onData(base64);
@@ -162,21 +185,17 @@ export class AudioService {
   }
 
   public async stopCapture(): Promise<void> {
-    // Hardware cleanup
     if (this.mediaStream) {
       this.mediaStream.getTracks().forEach(track => track.stop());
       this.mediaStream = null;
     }
     if (this.processor && this.source) {
-      // CRITICAL: Nullify callback to prevent firing after stop
       this.processor.onaudioprocess = null;
-      
       this.source.disconnect();
       this.processor.disconnect();
       this.processor = null;
       this.source = null;
     }
-    // Socket cleanup (detach listener but keep connection open for config)
     if (this.inputSocket) {
         this.inputSocket.onmessage = null;
     }
@@ -192,14 +211,14 @@ export class AudioService {
     // 1. External Output Routing
     if (this.useExternalOutput && this.outputSocket && this.outputSocket.readyState === WebSocket.OPEN) {
         this.outputSocket.send(arrayBuffer);
-        // If strict external output, we might want to return here. 
-        // For now, let's allow "Monitor" locally too, or return if exclusive.
-        // return; 
     }
 
     // 2. Hardware Output Routing
     const ctx = this.getContext();
-    if (ctx.state === 'suspended') await ctx.resume();
+    if (ctx.state === 'suspended') {
+        // Attempt to resume, though auto-play policies might block it if not user-initiated
+        await ctx.resume().catch(e => console.warn('Auto-play blocked:', e));
+    }
 
     try {
       const int16Data = new Int16Array(arrayBuffer);
@@ -223,19 +242,6 @@ export class AudioService {
   // =================================================================
   // HELPERS
   // =================================================================
-
-  private getContext(): AudioContext {
-    if (!this.audioContext) {
-      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
-        sampleRate: this.SAMPLE_RATE,
-      });
-      // Apply initial sink ID if set
-      if (this.currentOutputDeviceId !== 'default' && 'setSinkId' in this.audioContext) {
-          (this.audioContext as any).setSinkId(this.currentOutputDeviceId);
-      }
-    }
-    return this.audioContext;
-  }
 
   private floatTo16BitPCM(input: Float32Array): Int16Array {
     const output = new Int16Array(input.length);

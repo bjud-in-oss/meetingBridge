@@ -75,7 +75,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
             transcripts: [...state.transcripts, {
                 id: Math.random().toString(36).substr(2, 9),
                 senderId: payload.senderId,
-                text: payload.text,
+                text: payload.text || '...', // Fallback if empty
                 speakerLabel: payload.speakerLabel,
                 emotion: payload.prosody.emotion,
                 isTranslation: true,
@@ -110,7 +110,9 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
 
   toggleMic: async () => {
     const { isMicOn, treeState } = get();
-    // Use Singleton
+    // CRITICAL: Resume Audio Context on User Interaction
+    await AudioService.getInstance().resumeContext();
+
     const branchService = LanguageBranchService.getInstance(); 
     
     if (isMicOn) {

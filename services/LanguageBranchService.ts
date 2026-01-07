@@ -1,7 +1,7 @@
 
 import { GoogleGenAI, LiveServerMessage, Modality, FunctionDeclaration, Schema, Type } from "@google/genai";
 import { NetworkService } from "./NetworkService";
-import { TranslationPayload, NetworkRole } from "../types/schema";
+import { TranslationPayload, NetworkRole, AudioPayload } from "../types/schema";
 import { AudioService } from "./AudioService";
 
 // --- ANALYST TOOL DEFINITION ---
@@ -55,21 +55,13 @@ export class LanguageBranchService {
     this.myLanguage = lang;
   }
 
-  /**
-   * Called by the store when toggling mic/connection.
-   * Decides role based on NetworkRole.
-   */
   public async startSession() {
     const role = this.network.me.role;
-
-    // Stop any existing session first to avoid conflicts
     await this.stopSession();
 
     if (role === NetworkRole.ROOT || role === NetworkRole.BRANCH) {
-      // SENDER -> ANALYST
       await this.startAnalystSession();
     } else {
-      // RECEIVER -> ACTOR
       await this.startActorSession();
     }
   }
@@ -89,11 +81,9 @@ export class LanguageBranchService {
     this.currentMode = 'ANALYST';
     console.log('[Branch] Starting Analyst Session...');
     
-    // Create the session promise
     this.sessionPromise = this.ai.live.connect({
       model: 'gemini-2.5-flash-native-audio-preview-12-2025',
       config: {
-        // Ensure we explicitly ask for AUDIO modality even if we suppress output, to satisfy API requirements
         responseModalities: [Modality.AUDIO],
         tools: [{ functionDeclarations: [broadcastTranslationTool] }],
         systemInstruction: `You are a real-time speech translator engine.
@@ -107,32 +97,34 @@ export class LanguageBranchService {
       callbacks: {
         onopen: () => {
             console.log('[Branch] Analyst Connected via WebSocket.');
-            // Start capturing audio from hardware/socket
+            
             this.audioService.startCapture((base64) => {
-                // STRICT CHECK: If we are not in Analyst mode, stop immediately.
                 if (this.currentMode !== 'ANALYST') return;
+
+                // 1. PASSTHROUGH AUDIO (Broadcast Original Sound)
+                const audioPayload: AudioPayload = {
+                    senderId: this.network.me.id || 'ROOT',
+                    originLanguage: this.myLanguage,
+                    targetLanguage: 'raw',
+                    audioData: base64,
+                    isTranslation: false
+                };
+                this.network.broadcastAudio(audioPayload);
                 
-                // Capture local reference to promise
+                // 2. SEND TO GEMINI FOR TRANSLATION
                 const currentSessionPromise = this.sessionPromise;
                 if (!currentSessionPromise) return;
 
-                // Use the promise to ensure session is ready before sending
                 currentSessionPromise.then(sess => {
-                    // DOUBLE CHECK: Session might have closed while promise was resolving
                     if (this.currentMode !== 'ANALYST') return;
-                    
                     try {
                         sess.sendRealtimeInput({
                             media: { mimeType: 'audio/pcm;rate=16000', data: base64 }
                         });
                     } catch (err) {
-                        // Suppress "WebSocket is already in CLOSING or CLOSED state" errors
-                        // indicating the session died unexpectedly.
                         console.warn('Recoverable error sending audio chunk:', err);
                     }
-                }).catch(e => {
-                    console.warn('Session promise rejected:', e);
-                });
+                }).catch(e => console.warn('Session promise rejected:', e));
             });
         },
         onmessage: (msg: LiveServerMessage) => this.handleAnalystMessage(msg),
@@ -149,13 +141,7 @@ export class LanguageBranchService {
   }
 
   private cleanupSession() {
-      // If the socket closes unexpectedly, we should stop sending audio
-      // We don't necessarily want to fully stop (IDLE) if it's a temp flake,
-      // but for now, let's just stop the audio pump to prevent error spam.
       this.sessionPromise = null;
-      // We do NOT set currentMode = IDLE here automatically, 
-      // because we might want to auto-reconnect logic later. 
-      // For now, this effectively stops the audio loop from doing work.
   }
 
   private handleAnalystMessage(msg: LiveServerMessage) {
@@ -178,10 +164,8 @@ export class LanguageBranchService {
                     isFinal: true
                 };
 
-                // Broadcast to network AND local store
                 this.network.broadcastTranslation(payload);
 
-                // ACK
                 this.sessionPromise?.then(sess => {
                     sess.sendToolResponse({
                         functionResponses: {
@@ -212,10 +196,9 @@ export class LanguageBranchService {
             speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } 
             },
-            systemInstruction: `You are a Text-to-Speech engine.
-            I will send you text prompts.
-            Read them aloud immediately with the requested emotion.
-            Do not add conversational filler.`
+            systemInstruction: `You are a professional voice actor.
+            When I send you text, read it aloud immediately with the requested emotion.
+            Do not say "Sure" or "Here is the reading". Just read the text.`
         },
         callbacks: {
             onopen: () => console.log('[Branch] Actor Connected'),
@@ -237,23 +220,19 @@ export class LanguageBranchService {
     });
   }
 
-  /**
-   * Called by NetworkService when a TranslationPayload arrives.
-   */
   public async handleIncomingTranslation(payload: TranslationPayload) {
-    // If I'm the one who sent it (Analyst), I don't need to act it out.
     if (this.currentMode !== 'ACTOR') return;
 
     let voiceName = this.voiceMap[payload.speakerLabel];
     if (!voiceName) {
         const voices = ['Kore', 'Fenrir', 'Puck', 'Charon', 'Zephyr'];
-        // Simple consistent hash
         const hash = payload.speakerLabel.split('').reduce((a,b)=>a+b.charCodeAt(0),0);
         voiceName = voices[hash % voices.length];
         this.voiceMap[payload.speakerLabel] = voiceName;
     }
 
-    const prompt = `[Speaker: ${voiceName}] [Emotion: ${payload.prosody.emotion}] Say: "${payload.text}"`;
+    // Explicitly prompt for reading to ensure audio generation
+    const prompt = `Please read this: "${payload.text}"`;
 
     this.sessionPromise?.then(sess => {
         try {
