@@ -56,7 +56,20 @@ export class NetworkService {
 
   public connect(roomId: string, displayName: string, language: string, forceRoot: boolean = false) {
     if (this.room) this.leave();
-    this.room = joinRoom({ appId: this.appId }, roomId);
+    
+    // Use multiple relays for redundancy
+    const relayConfig = { 
+        appId: this.appId,
+        password: 'optional-password', // Optional: keeps room private to this app
+        relayUrls: [
+            'wss://relay.nostr.band',
+            'wss://nostr.wine',
+            'wss://relay.damus.io',
+            'wss://nos.lol'
+        ] 
+    };
+
+    this.room = joinRoom(relayConfig, roomId);
     this.me.displayName = displayName;
     this.me.myLanguage = language;
     this.me.childrenIds = [];
@@ -195,27 +208,20 @@ export class NetworkService {
       // 1. Send to network
       this.routeData('TRANSLATION_DATA', payload);
       
-      // 2. IMPORTANT: Echo back to myself so I see the transcript too
+      // 2. Echo locally
       this.onTranslationReceived(payload);
   }
 
   private routeData(type: PacketType, payload: any) {
      const packet: NetworkPacket = { type, senderId: this.getMyId(), payload };
      
-     // REFACTOR: Send to EVERYONE (Parent AND Children) so visibility is broad.
-     // In a strict tree, you only go down, but for a group chat feel, we go both ways.
-     
-     if (this.me.parentId) {
-         this.sendPacket(packet, this.me.parentId);
-     }
-     
-     if (this.me.childrenIds.length > 0) {
-         this.me.childrenIds.forEach(id => this.sendPacket(packet, id));
-     }
+     // CRITICAL FIX: BROADCAST TO ALL
+     // The previous strict tree routing failed if parentId was null (which happens during shaky connections).
+     // Sending to everyone ensures the message gets out. Trystero handles the heavy lifting.
+     this.sendPacket(packet);
   }
 
   private handleAudio(senderId: string, payload: AudioPayload) {
-      // Avoid loops: if I am the sender, ignore.
       if (payload.senderId === this.getMyId()) return;
       this.onAudioReceived(payload);
   }
@@ -223,22 +229,11 @@ export class NetworkService {
   private handleTranslationData(payload: TranslationPayload) {
       if (payload.senderId === this.getMyId()) return;
 
-      // 1. Process locally
       this.onTranslationReceived(payload);
-
-      // 2. Forward to everyone (Broadcasting)
-      // Note: A real mesh needs a deduplication ID. 
-      // For this simplified tree, we just re-broadcast to neighbors.
-      // This might cause small loops if topology is circular, but our topology is tree-enforced.
-      // However, since handleTranslationData is called when receiving from a peer, 
-      // we should be careful not to echo BACK to that peer.
       
-      // We will skip complex routing for now and rely on the fact that 
-      // the topology is a Tree (Parent <-> Child). 
-      // To propagate "Up" and "Down" fully, we routeData.
-      
-      // NOTE: This basic flood might be noisy, but ensures delivery.
-      this.routeData('TRANSLATION_DATA', payload);
+      // In a pure broadcast model, we don't need to re-broadcast unless we are bridging a mesh.
+      // Since everyone is in the same Trystero room, "sendPacket" hits everyone.
+      // So NO RE-BROADCASTING here to avoid infinite loops.
   }
 
   // --- HELPERS ---
@@ -247,7 +242,7 @@ export class NetworkService {
     const [send] = this.room.makeAction('packet');
     try {
         if (targetId) send(packet, targetId);
-        else send(packet); // Broadcast
+        else send(packet); // Broadcast to entire room
     } catch(e) {}
   }
 

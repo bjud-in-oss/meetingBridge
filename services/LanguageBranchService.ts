@@ -30,7 +30,6 @@ export class LanguageBranchService {
   private myLanguage: string = 'en-US';
   private currentMode: 'ANALYST' | 'ACTOR' | 'IDLE' = 'IDLE';
 
-  // Voice Mapping for "Actor" Mode
   private voiceMap: Record<string, string> = {
     'Speaker A': 'Kore',
     'Speaker B': 'Fenrir',
@@ -55,26 +54,27 @@ export class LanguageBranchService {
     this.myLanguage = lang;
   }
 
+  // CRITICAL CHANGE: Decouple "Analyst" mode from Network Role.
+  // If the user starts the session (Mic On), they become an Analyst (Sender).
+  // If they stop the session (Mic Off), they become an Actor (Receiver).
   public async startSession() {
-    const role = this.network.me.role;
     await this.stopSession();
-
-    if (role === NetworkRole.ROOT || role === NetworkRole.BRANCH) {
-      await this.startAnalystSession();
-    } else {
-      await this.startActorSession();
-    }
+    
+    // We assume startSession is called when Mic is toggled ON.
+    await this.startAnalystSession();
   }
 
   public async stopSession() {
     this.currentMode = 'IDLE';
     this.sessionPromise = null;
     await this.audioService.stopCapture();
+    
+    // When stopping Analyst mode, immediately revert to Actor mode to listen
+    await this.startActorSession();
   }
 
   // =================================================================
   // 1. ANALYST MODE (Sender)
-  // Listens to Audio -> Function Call -> Broadcast JSON
   // =================================================================
 
   private async startAnalystSession() {
@@ -86,22 +86,19 @@ export class LanguageBranchService {
       config: {
         responseModalities: [Modality.AUDIO],
         tools: [{ functionDeclarations: [broadcastTranslationTool] }],
-        systemInstruction: `You are a real-time speech translator engine.
-        1. Listen to the incoming audio stream continuously.
-        2. Whenever you hear speech, translate it to ${this.myLanguage}.
-        3. IMMEDIATELY call the 'broadcast_translation' function with the translation.
-        4. Detect the speaker (Speaker A/B) and emotion.
-        5. DO NOT output text or audio yourself. ONLY call the function.
-        6. Keep calling the function as the conversation progresses.`,
+        systemInstruction: `You are a real-time speech translator.
+        1. Listen to audio.
+        2. Translate to ${this.myLanguage}.
+        3. Call 'broadcast_translation' with the result.
+        4. Do NOT speak the translation yourself unless asked.`,
       },
       callbacks: {
         onopen: () => {
-            console.log('[Branch] Analyst Connected via WebSocket.');
-            
+            console.log('[Branch] Analyst Connected.');
             this.audioService.startCapture((base64) => {
                 if (this.currentMode !== 'ANALYST') return;
 
-                // 1. PASSTHROUGH AUDIO (Broadcast Original Sound)
+                // 1. Broadcast Raw Audio (Passthrough)
                 const audioPayload: AudioPayload = {
                     senderId: this.network.me.id || 'ROOT',
                     originLanguage: this.myLanguage,
@@ -111,37 +108,25 @@ export class LanguageBranchService {
                 };
                 this.network.broadcastAudio(audioPayload);
                 
-                // 2. SEND TO GEMINI FOR TRANSLATION
-                const currentSessionPromise = this.sessionPromise;
-                if (!currentSessionPromise) return;
-
-                currentSessionPromise.then(sess => {
+                // 2. Send to Gemini
+                this.sessionPromise?.then(sess => {
                     if (this.currentMode !== 'ANALYST') return;
                     try {
                         sess.sendRealtimeInput({
                             media: { mimeType: 'audio/pcm;rate=16000', data: base64 }
                         });
-                    } catch (err) {
-                        console.warn('Recoverable error sending audio chunk:', err);
-                    }
-                }).catch(e => console.warn('Session promise rejected:', e));
+                    } catch (err) {}
+                });
             });
         },
         onmessage: (msg: LiveServerMessage) => this.handleAnalystMessage(msg),
         onerror: (e) => {
-            console.error('[Branch] Analyst Error', e);
-            this.cleanupSession();
+             console.error('[Branch] Analyst Error', e);
+             // Don't kill session immediately on minor errors, but log it
         },
-        onclose: () => {
-            console.log('[Branch] Analyst Closed');
-            this.cleanupSession();
-        }
+        onclose: () => console.log('[Branch] Analyst Closed')
       }
     });
-  }
-
-  private cleanupSession() {
-      this.sessionPromise = null;
   }
 
   private handleAnalystMessage(msg: LiveServerMessage) {
@@ -150,16 +135,12 @@ export class LanguageBranchService {
         for (const fc of toolCall.functionCalls) {
             if (fc.name === 'broadcast_translation') {
                 const args = fc.args as any;
-                
                 const payload: TranslationPayload = {
                     type: 'TRANSLATION_DATA',
                     text: args.text,
                     senderId: this.network.me.id || 'ROOT',
-                    speakerLabel: args.speakerLabel || 'Speaker',
-                    prosody: {
-                        emotion: args.emotion || 'Neutral',
-                        speed: args.speed || 1.0
-                    },
+                    speakerLabel: args.speakerLabel || 'Me',
+                    prosody: { emotion: args.emotion || 'Neutral', speed: 1.0 },
                     targetLanguage: this.myLanguage,
                     isFinal: true
                 };
@@ -182,7 +163,6 @@ export class LanguageBranchService {
 
   // =================================================================
   // 2. ACTOR MODE (Receiver)
-  // Listens to JSON (Network) -> Gemini Prompt -> Audio Output
   // =================================================================
 
   private async startActorSession() {
@@ -193,55 +173,50 @@ export class LanguageBranchService {
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
             responseModalities: [Modality.AUDIO],
-            speechConfig: {
-                voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } 
-            },
-            systemInstruction: `You are a professional voice actor.
-            When I send you text, read it aloud immediately with the requested emotion.
-            Do not say "Sure" or "Here is the reading". Just read the text.`
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+            systemInstruction: `You are a text-to-speech engine. Read exactly what I send you.`
         },
         callbacks: {
             onopen: () => console.log('[Branch] Actor Connected'),
             onmessage: (msg: LiveServerMessage) => {
                 const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-                if (audioData) {
-                    this.audioService.playAudioQueue(audioData);
-                }
+                if (audioData) this.audioService.playAudioQueue(audioData);
             },
-            onerror: (e) => {
-                console.error('[Branch] Actor Error', e);
-                this.cleanupSession();
-            },
-            onclose: () => {
-                console.log('[Branch] Actor Closed');
-                this.cleanupSession();
-            }
+            onerror: (e) => console.error('[Branch] Actor Error', e),
+            onclose: () => console.log('[Branch] Actor Closed')
         }
     });
   }
 
+  // =================================================================
+  // INCOMING HANDLING
+  // =================================================================
+
   public async handleIncomingTranslation(payload: TranslationPayload) {
-    if (this.currentMode !== 'ACTOR') return;
+    // We want to hear translations regardless of our mode (Full Duplex), 
+    // BUT we can't easily interrupt the Analyst session input stream for TTS.
+    
+    // STRATEGY: 
+    // If in ACTOR mode, use Gemini.
+    // If in ANALYST mode, use Browser Speech API (fallback) to avoid interrupting the mic stream logic.
 
-    let voiceName = this.voiceMap[payload.speakerLabel];
-    if (!voiceName) {
-        const voices = ['Kore', 'Fenrir', 'Puck', 'Charon', 'Zephyr'];
-        const hash = payload.speakerLabel.split('').reduce((a,b)=>a+b.charCodeAt(0),0);
-        voiceName = voices[hash % voices.length];
-        this.voiceMap[payload.speakerLabel] = voiceName;
+    if (this.currentMode === 'ACTOR') {
+        const prompt = `Say this with ${payload.prosody.emotion} emotion: "${payload.text}"`;
+        this.sessionPromise?.then(sess => {
+            try { sess.sendRealtimeInput({ content: [{ text: prompt }] }); } catch(e) {}
+        });
+    } else {
+        // Fallback for Analyst Mode (Speaking)
+        this.speakWithBrowser(payload.text);
     }
+  }
 
-    // Explicitly prompt for reading to ensure audio generation
-    const prompt = `Please read this: "${payload.text}"`;
-
-    this.sessionPromise?.then(sess => {
-        try {
-            sess.sendRealtimeInput({
-                content: [{ text: prompt }]
-            });
-        } catch(e) {
-            console.warn('Failed to send text to Actor:', e);
-        }
-    }).catch(() => {});
+  private speakWithBrowser(text: string) {
+      if ('speechSynthesis' in window) {
+          const utterance = new SpeechSynthesisUtterance(text);
+          // Try to match language code
+          utterance.lang = this.myLanguage; 
+          window.speechSynthesis.speak(utterance);
+      }
   }
 }
