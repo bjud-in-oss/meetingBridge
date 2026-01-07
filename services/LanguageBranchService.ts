@@ -13,7 +13,7 @@ const broadcastTranslationTool: FunctionDeclaration = {
     properties: {
       text: { type: Type.STRING, description: 'The text content of what was said.' },
       speakerLabel: { type: Type.STRING, description: 'The identified speaker label.' },
-      emotion: { type: Type.STRING, description: 'The detected emotional tone (e.g. Joy, Anger, Sorrow, Excitement).' },
+      emotion: { type: Type.STRING, description: 'The detected emotional tone (e.g. Joy, Anger, Sorrow, Excitement, Neutral).' },
       speed: { type: Type.NUMBER, description: 'Speech speed relative to normal (0.5 - 2.0).' }
     },
     required: ['text', 'speakerLabel', 'emotion']
@@ -87,7 +87,8 @@ export class LanguageBranchService {
             this.audioService.startCapture((base64) => {
                 if (this.currentMode !== 'ANALYST') return;
 
-                // 1. Passthrough (Raw Audio)
+                // 1. Passthrough (Raw Audio) - Only if needed, but we rely on translation
+                /* 
                 const audioPayload: AudioPayload = {
                     senderId: this.network.me.id || 'ROOT',
                     originLanguage: this.myLanguage,
@@ -96,6 +97,7 @@ export class LanguageBranchService {
                     isTranslation: false
                 };
                 this.network.broadcastAudio(audioPayload);
+                */
                 
                 // 2. Intelligence
                 this.sessionPromise?.then(sess => {
@@ -160,13 +162,15 @@ export class LanguageBranchService {
         config: {
             responseModalities: [Modality.AUDIO],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
-            systemInstruction: `You are a Voice Actor and Translator.
-            I will send you text in various languages.
-            You MUST:
-            1. Translate the text into ${this.myLanguage}.
-            2. Speak the TRANSLATION aloud with high expressiveness.
-            3. Match the requested emotion (e.g. if I say "Anger", sound angry).
-            4. Do NOT say "Translation:" or "He said:". Just act out the translated text.`
+            systemInstruction: `You are a professional Voice Actor and Synchronous Interpreter.
+            Your Task:
+            1. I will send you text (which may be in any language).
+            2. You MUST translate it immediately into ${this.myLanguage}.
+            3. Speak the TRANSLATION aloud.
+            4. ACT out the text. Use dynamic pitch, speed, and tone to match the requested emotion.
+            5. NEVER repeat the source text. NEVER say "The translation is...". JUST ACT.
+            6. If the input is already in ${this.myLanguage}, just act it out with high quality.
+            `
         },
         callbacks: {
             onopen: () => console.log('[Branch] Actor Connected'),
@@ -190,7 +194,14 @@ export class LanguageBranchService {
 
     if (this.currentMode === 'ACTOR') {
         // 2. FORCE TRANSLATION TO MY LANGUAGE
-        const prompt = `Speaker is feeling ${payload.prosody.emotion}. Translate and speak this: "${payload.text}"`;
+        // We structure the prompt to explicitly define the task for the model.
+        const prompt = `
+        [INSTRUCTION]
+        Source Text: "${payload.text}"
+        Target Language: ${this.myLanguage}
+        Required Emotion: ${payload.prosody.emotion}
+        Task: Translate the source text to the target language and speak it with the required emotion.
+        `;
         
         this.sessionPromise?.then(sess => {
             try { sess.sendRealtimeInput({ content: [{ text: prompt }] }); } catch(e) {}

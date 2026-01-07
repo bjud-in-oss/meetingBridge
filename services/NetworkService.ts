@@ -1,5 +1,5 @@
 
-import { joinRoom, Room } from 'trystero';
+import { joinRoom, Room } from 'trystero/torrent';
 import { NetworkRole, Peer, AudioPayload, TranslationPayload } from '../types/schema';
 
 // Internal packet types
@@ -57,9 +57,8 @@ export class NetworkService {
   public connect(roomId: string, displayName: string, language: string, forceRoot: boolean = false) {
     if (this.room) this.leave();
     
-    // FIX: Revert to default strategy (BitTorrent/Tracker).
-    // Nostr relays (relayUrls) impose strict rate limits which block our audio/data stream.
-    // The default strategy is much more robust for high-frequency updates.
+    // FIX: Strictly use BitTorrent strategy via 'trystero/torrent' import.
+    // This completely bypasses the Nostr logic that was causing relay auth errors.
     this.room = joinRoom({ appId: this.appId }, roomId);
 
     this.me.displayName = displayName;
