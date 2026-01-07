@@ -57,9 +57,15 @@ export class NetworkService {
   public connect(roomId: string, displayName: string, language: string, forceRoot: boolean = false) {
     if (this.room) this.leave();
     
-    // FIX: Strictly use BitTorrent strategy via 'trystero/torrent' import.
-    // This completely bypasses the Nostr logic that was causing relay auth errors.
-    this.room = joinRoom({ appId: this.appId }, roomId);
+    // Use robust fallback trackers
+    const trackerUrls = [
+      'wss://tracker.webtorrent.dev',
+      'wss://tracker.openwebtorrent.com',
+      'wss://tracker.btorrent.xyz',
+      'wss://tracker.files.fm:7073/announce'
+    ];
+
+    this.room = joinRoom({ appId: this.appId, trackerUrls }, roomId);
 
     this.me.displayName = displayName;
     this.me.myLanguage = language;

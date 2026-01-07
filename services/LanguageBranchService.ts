@@ -48,17 +48,38 @@ export class LanguageBranchService {
   }
 
   public async startSession() {
-    await this.stopSession();
+    // START SPEAKING (Analyst Mode)
+    // Guard: Prevent re-initialization if already in Analyst mode
+    if (this.currentMode === 'ANALYST') return;
+
+    await this.cleanupSession();
     await this.startAnalystSession();
   }
 
   public async stopSession() {
-    this.currentMode = 'IDLE';
-    this.sessionPromise = null;
-    await this.audioService.stopCapture();
+    // STOP SPEAKING -> START LISTENING (Actor Mode)
+    // Guard: Prevent re-initialization if already in Actor mode
+    if (this.currentMode === 'ACTOR') return;
     
-    // Switch to listening mode
+    await this.cleanupSession();
     await this.startActorSession();
+  }
+
+  private async cleanupSession() {
+    this.currentMode = 'IDLE';
+    await this.audioService.stopCapture();
+
+    if (this.sessionPromise) {
+        try {
+            const session = await this.sessionPromise;
+            if (session && typeof session.close === 'function') {
+                session.close();
+            }
+        } catch (e) {
+            console.warn('[Branch] Error closing session', e);
+        }
+        this.sessionPromise = null;
+    }
   }
 
   // =================================================================
@@ -66,6 +87,7 @@ export class LanguageBranchService {
   // =================================================================
 
   private async startAnalystSession() {
+    if (this.currentMode === 'ANALYST') return;
     this.currentMode = 'ANALYST';
     console.log('[Branch] Starting Analyst Session...');
     
@@ -86,20 +108,8 @@ export class LanguageBranchService {
             console.log('[Branch] Analyst Connected.');
             this.audioService.startCapture((base64) => {
                 if (this.currentMode !== 'ANALYST') return;
-
-                // 1. Passthrough (Raw Audio) - Only if needed, but we rely on translation
-                /* 
-                const audioPayload: AudioPayload = {
-                    senderId: this.network.me.id || 'ROOT',
-                    originLanguage: this.myLanguage,
-                    targetLanguage: 'raw',
-                    audioData: base64,
-                    isTranslation: false
-                };
-                this.network.broadcastAudio(audioPayload);
-                */
                 
-                // 2. Intelligence
+                // Intelligence
                 this.sessionPromise?.then(sess => {
                     if (this.currentMode !== 'ANALYST') return;
                     try {
@@ -154,6 +164,7 @@ export class LanguageBranchService {
   // =================================================================
 
   private async startActorSession() {
+    if (this.currentMode === 'ACTOR') return;
     this.currentMode = 'ACTOR';
     console.log('[Branch] Starting Actor Session...');
     
@@ -194,7 +205,6 @@ export class LanguageBranchService {
 
     if (this.currentMode === 'ACTOR') {
         // 2. FORCE TRANSLATION TO MY LANGUAGE
-        // We structure the prompt to explicitly define the task for the model.
         const prompt = `
         [INSTRUCTION]
         Source Text: "${payload.text}"
