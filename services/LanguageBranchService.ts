@@ -7,14 +7,14 @@ import { AudioService } from "./AudioService";
 // --- ANALYST TOOL DEFINITION ---
 const broadcastTranslationTool: FunctionDeclaration = {
   name: 'broadcast_translation',
-  description: 'Broadcasts the translated text and speaker metadata to the network. Call this for EVERY speech segment detected.',
+  description: 'Broadcasts the transcribed/translated text and speaker metadata to the network.',
   parameters: {
     type: Type.OBJECT,
     properties: {
-      text: { type: Type.STRING, description: 'The translated text in the target language.' },
-      speakerLabel: { type: Type.STRING, description: 'The identified speaker (e.g. "Speaker A", "John").' },
-      emotion: { type: Type.STRING, description: 'The emotional tone of the speaker (e.g. "Happy", "Serious").' },
-      speed: { type: Type.NUMBER, description: 'The speed of speech relative to normal (0.5 to 2.0).' }
+      text: { type: Type.STRING, description: 'The text content of what was said.' },
+      speakerLabel: { type: Type.STRING, description: 'The identified speaker label.' },
+      emotion: { type: Type.STRING, description: 'The detected emotional tone.' },
+      speed: { type: Type.NUMBER, description: 'Speech speed.' }
     },
     required: ['text', 'speakerLabel', 'emotion']
   }
@@ -29,13 +29,6 @@ export class LanguageBranchService {
   private sessionPromise: Promise<any> | null = null;
   private myLanguage: string = 'en-US';
   private currentMode: 'ANALYST' | 'ACTOR' | 'IDLE' = 'IDLE';
-
-  private voiceMap: Record<string, string> = {
-    'Speaker A': 'Kore',
-    'Speaker B': 'Fenrir',
-    'Speaker C': 'Puck',
-    'Speaker D': 'Charon'
-  };
 
   private constructor() {
     this.network = NetworkService.getInstance();
@@ -54,8 +47,6 @@ export class LanguageBranchService {
     this.myLanguage = lang;
   }
 
-  // FIX: Allow anyone to start an Analyst session if they toggle Mic ON.
-  // We ignore the NetworkRole restriction for now to ensure functionality.
   public async startSession() {
     await this.stopSession();
     await this.startAnalystSession();
@@ -66,12 +57,12 @@ export class LanguageBranchService {
     this.sessionPromise = null;
     await this.audioService.stopCapture();
     
-    // Fall back to Actor mode to keep listening for incoming TTS
+    // Switch to listening mode
     await this.startActorSession();
   }
 
   // =================================================================
-  // 1. ANALYST MODE (Sender)
+  // 1. ANALYST MODE (Sender/Microphone Active)
   // =================================================================
 
   private async startAnalystSession() {
@@ -83,11 +74,12 @@ export class LanguageBranchService {
       config: {
         responseModalities: [Modality.AUDIO],
         tools: [{ functionDeclarations: [broadcastTranslationTool] }],
-        systemInstruction: `You are a real-time speech translator.
-        1. Listen to audio.
-        2. Translate to ${this.myLanguage}.
-        3. Call 'broadcast_translation' with the result.
-        4. Do NOT speak the translation yourself unless asked.`,
+        systemInstruction: `You are an expert speech analyst.
+        1. Listen to the audio stream.
+        2. Transcribe accurately what is said.
+        3. Call 'broadcast_translation' with the transcription.
+        4. Detect emotions accurately.
+        5. Do NOT speak. Only listen and call the function.`,
       },
       callbacks: {
         onopen: () => {
@@ -95,7 +87,7 @@ export class LanguageBranchService {
             this.audioService.startCapture((base64) => {
                 if (this.currentMode !== 'ANALYST') return;
 
-                // 1. Broadcast Raw Audio (Passthrough) for immediate feedback
+                // 1. Passthrough (Raw Audio)
                 const audioPayload: AudioPayload = {
                     senderId: this.network.me.id || 'ROOT',
                     originLanguage: this.myLanguage,
@@ -105,7 +97,7 @@ export class LanguageBranchService {
                 };
                 this.network.broadcastAudio(audioPayload);
                 
-                // 2. Send to Gemini for Intelligence
+                // 2. Intelligence
                 this.sessionPromise?.then(sess => {
                     if (this.currentMode !== 'ANALYST') return;
                     try {
@@ -117,9 +109,7 @@ export class LanguageBranchService {
             });
         },
         onmessage: (msg: LiveServerMessage) => this.handleAnalystMessage(msg),
-        onerror: (e) => {
-             console.error('[Branch] Analyst Error', e);
-        },
+        onerror: (e) => console.error('[Branch] Analyst Error', e),
         onclose: () => console.log('[Branch] Analyst Closed')
       }
     });
@@ -135,9 +125,9 @@ export class LanguageBranchService {
                     type: 'TRANSLATION_DATA',
                     text: args.text,
                     senderId: this.network.me.id || 'ROOT',
-                    speakerLabel: args.speakerLabel || 'Me',
+                    speakerLabel: args.speakerLabel || 'Speaker',
                     prosody: { emotion: args.emotion || 'Neutral', speed: 1.0 },
-                    targetLanguage: this.myLanguage,
+                    targetLanguage: 'source', // We send source text, receiver translates
                     isFinal: true
                 };
 
@@ -158,7 +148,7 @@ export class LanguageBranchService {
   }
 
   // =================================================================
-  // 2. ACTOR MODE (Receiver)
+  // 2. ACTOR MODE (Receiver/Listener)
   // =================================================================
 
   private async startActorSession() {
@@ -170,7 +160,10 @@ export class LanguageBranchService {
         config: {
             responseModalities: [Modality.AUDIO],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
-            systemInstruction: `You are a text-to-speech engine. Read exactly what I send you.`
+            systemInstruction: `You are a professional interpreter. 
+            Your job is to receive text, translate it to the requested language, and speak it aloud.
+            Speak naturally, mirroring the emotion of the original speaker.
+            Do NOT say "Translation:" or "Here is the text". Just speak the translation.`
         },
         callbacks: {
             onopen: () => console.log('[Branch] Actor Connected'),
@@ -189,24 +182,23 @@ export class LanguageBranchService {
   // =================================================================
 
   public async handleIncomingTranslation(payload: TranslationPayload) {
+    // 1. Prevent Self-Echo: Do not play back my own words
+    if (payload.senderId === this.network.me.id) {
+        return;
+    }
+
     if (this.currentMode === 'ACTOR') {
-        // Use Gemini for High Quality TTS
-        const prompt = `Say this with ${payload.prosody.emotion} emotion: "${payload.text}"`;
+        // 2. FORCE TRANSLATION TO MY LANGUAGE
+        // Use a prompt that forces Gemini to translate the incoming text to the user's selected language.
+        const prompt = `Translate the following text into ${this.myLanguage} and speak it aloud immediately with ${payload.prosody.emotion} emotion. The text is: "${payload.text}"`;
+        
         this.sessionPromise?.then(sess => {
             try { sess.sendRealtimeInput({ content: [{ text: prompt }] }); } catch(e) {}
         });
     } else {
-        // Fallback: Use Browser Native TTS if we are busy acting as an Analyst (Speaking)
-        // This prevents interrupting the input stream session.
-        this.speakWithBrowser(payload.text);
+        // Fallback if we are in Analyst mode (Mic Hot) - minimal feedback to avoid distraction
+        // or potentially speak nicely via browser if needed.
+        // For now, let's silence it to prevent feedback loops while speaking.
     }
-  }
-
-  private speakWithBrowser(text: string) {
-      if ('speechSynthesis' in window) {
-          const utterance = new SpeechSynthesisUtterance(text);
-          utterance.lang = this.myLanguage; 
-          window.speechSynthesis.speak(utterance);
-      }
   }
 }

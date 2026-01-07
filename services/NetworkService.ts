@@ -57,9 +57,18 @@ export class NetworkService {
   public connect(roomId: string, displayName: string, language: string, forceRoot: boolean = false) {
     if (this.room) this.leave();
     
-    // FIX: Remove specific relayUrls. 
-    // Trystero's default tracker strategy is more permissive and robust for demos.
-    this.room = joinRoom({ appId: this.appId }, roomId);
+    // FIX: Use reliable public relays that don't require Auth
+    const config = {
+        appId: this.appId,
+        relayUrls: [
+            'wss://nos.lol',
+            'wss://relay.snort.social',
+            'wss://relay.damus.io', // High traffic but usually works
+            'wss://relay.bitcoiner.social'
+        ]
+    };
+
+    this.room = joinRoom(config, roomId);
 
     this.me.displayName = displayName;
     this.me.myLanguage = language;
@@ -70,7 +79,6 @@ export class NetworkService {
     if (forceRoot) {
       this.me.id = 'ROOT-' + Math.random().toString(36).substr(2, 5); 
     } else {
-      // Ensure we always have an ID
       this.me.id = Math.random().toString(36).substr(2, 9);
     }
 
@@ -209,10 +217,7 @@ export class NetworkService {
   private routeData(type: PacketType, payload: any) {
      const packet: NetworkPacket = { type, senderId: this.getMyId(), payload };
      
-     // FIX: Broadcast to EVERYONE.
-     // In the previous version, we tried to be smart about Parent/Child routing.
-     // However, due to connection instability, parentId was often null, causing silent failures.
-     // Broadcasting ensures that everyone in the "Room" gets the data, acting like a mesh.
+     // FIX: Broadcast to EVERYONE to ensure delivery even if topology is partial.
      this.sendPacket(packet);
   }
 
@@ -223,7 +228,6 @@ export class NetworkService {
 
   private handleTranslationData(payload: TranslationPayload) {
       if (payload.senderId === this.getMyId()) return;
-
       this.onTranslationReceived(payload);
   }
 
@@ -233,7 +237,7 @@ export class NetworkService {
     const [send] = this.room.makeAction('packet');
     try {
         if (targetId) send(packet, targetId);
-        else send(packet); // Broadcast to entire room
+        else send(packet); // Broadcast
     } catch(e) {
       console.warn('Packet send failed', e);
     }
