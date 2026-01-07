@@ -54,13 +54,10 @@ export class LanguageBranchService {
     this.myLanguage = lang;
   }
 
-  // CRITICAL CHANGE: Decouple "Analyst" mode from Network Role.
-  // If the user starts the session (Mic On), they become an Analyst (Sender).
-  // If they stop the session (Mic Off), they become an Actor (Receiver).
+  // FIX: Allow anyone to start an Analyst session if they toggle Mic ON.
+  // We ignore the NetworkRole restriction for now to ensure functionality.
   public async startSession() {
     await this.stopSession();
-    
-    // We assume startSession is called when Mic is toggled ON.
     await this.startAnalystSession();
   }
 
@@ -69,7 +66,7 @@ export class LanguageBranchService {
     this.sessionPromise = null;
     await this.audioService.stopCapture();
     
-    // When stopping Analyst mode, immediately revert to Actor mode to listen
+    // Fall back to Actor mode to keep listening for incoming TTS
     await this.startActorSession();
   }
 
@@ -98,7 +95,7 @@ export class LanguageBranchService {
             this.audioService.startCapture((base64) => {
                 if (this.currentMode !== 'ANALYST') return;
 
-                // 1. Broadcast Raw Audio (Passthrough)
+                // 1. Broadcast Raw Audio (Passthrough) for immediate feedback
                 const audioPayload: AudioPayload = {
                     senderId: this.network.me.id || 'ROOT',
                     originLanguage: this.myLanguage,
@@ -108,7 +105,7 @@ export class LanguageBranchService {
                 };
                 this.network.broadcastAudio(audioPayload);
                 
-                // 2. Send to Gemini
+                // 2. Send to Gemini for Intelligence
                 this.sessionPromise?.then(sess => {
                     if (this.currentMode !== 'ANALYST') return;
                     try {
@@ -122,7 +119,6 @@ export class LanguageBranchService {
         onmessage: (msg: LiveServerMessage) => this.handleAnalystMessage(msg),
         onerror: (e) => {
              console.error('[Branch] Analyst Error', e);
-             // Don't kill session immediately on minor errors, but log it
         },
         onclose: () => console.log('[Branch] Analyst Closed')
       }
@@ -193,20 +189,15 @@ export class LanguageBranchService {
   // =================================================================
 
   public async handleIncomingTranslation(payload: TranslationPayload) {
-    // We want to hear translations regardless of our mode (Full Duplex), 
-    // BUT we can't easily interrupt the Analyst session input stream for TTS.
-    
-    // STRATEGY: 
-    // If in ACTOR mode, use Gemini.
-    // If in ANALYST mode, use Browser Speech API (fallback) to avoid interrupting the mic stream logic.
-
     if (this.currentMode === 'ACTOR') {
+        // Use Gemini for High Quality TTS
         const prompt = `Say this with ${payload.prosody.emotion} emotion: "${payload.text}"`;
         this.sessionPromise?.then(sess => {
             try { sess.sendRealtimeInput({ content: [{ text: prompt }] }); } catch(e) {}
         });
     } else {
-        // Fallback for Analyst Mode (Speaking)
+        // Fallback: Use Browser Native TTS if we are busy acting as an Analyst (Speaking)
+        // This prevents interrupting the input stream session.
         this.speakWithBrowser(payload.text);
     }
   }
@@ -214,7 +205,6 @@ export class LanguageBranchService {
   private speakWithBrowser(text: string) {
       if ('speechSynthesis' in window) {
           const utterance = new SpeechSynthesisUtterance(text);
-          // Try to match language code
           utterance.lang = this.myLanguage; 
           window.speechSynthesis.speak(utterance);
       }

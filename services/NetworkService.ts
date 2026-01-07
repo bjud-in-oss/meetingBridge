@@ -57,19 +57,10 @@ export class NetworkService {
   public connect(roomId: string, displayName: string, language: string, forceRoot: boolean = false) {
     if (this.room) this.leave();
     
-    // Use multiple relays for redundancy
-    const relayConfig = { 
-        appId: this.appId,
-        password: 'optional-password', // Optional: keeps room private to this app
-        relayUrls: [
-            'wss://relay.nostr.band',
-            'wss://nostr.wine',
-            'wss://relay.damus.io',
-            'wss://nos.lol'
-        ] 
-    };
+    // FIX: Remove specific relayUrls. 
+    // Trystero's default tracker strategy is more permissive and robust for demos.
+    this.room = joinRoom({ appId: this.appId }, roomId);
 
-    this.room = joinRoom(relayConfig, roomId);
     this.me.displayName = displayName;
     this.me.myLanguage = language;
     this.me.childrenIds = [];
@@ -78,6 +69,9 @@ export class NetworkService {
 
     if (forceRoot) {
       this.me.id = 'ROOT-' + Math.random().toString(36).substr(2, 5); 
+    } else {
+      // Ensure we always have an ID
+      this.me.id = Math.random().toString(36).substr(2, 9);
     }
 
     const [sendPacket, getPacket] = this.room.makeAction('packet');
@@ -215,9 +209,10 @@ export class NetworkService {
   private routeData(type: PacketType, payload: any) {
      const packet: NetworkPacket = { type, senderId: this.getMyId(), payload };
      
-     // CRITICAL FIX: BROADCAST TO ALL
-     // The previous strict tree routing failed if parentId was null (which happens during shaky connections).
-     // Sending to everyone ensures the message gets out. Trystero handles the heavy lifting.
+     // FIX: Broadcast to EVERYONE.
+     // In the previous version, we tried to be smart about Parent/Child routing.
+     // However, due to connection instability, parentId was often null, causing silent failures.
+     // Broadcasting ensures that everyone in the "Room" gets the data, acting like a mesh.
      this.sendPacket(packet);
   }
 
@@ -230,10 +225,6 @@ export class NetworkService {
       if (payload.senderId === this.getMyId()) return;
 
       this.onTranslationReceived(payload);
-      
-      // In a pure broadcast model, we don't need to re-broadcast unless we are bridging a mesh.
-      // Since everyone is in the same Trystero room, "sendPacket" hits everyone.
-      // So NO RE-BROADCASTING here to avoid infinite loops.
   }
 
   // --- HELPERS ---
@@ -243,7 +234,9 @@ export class NetworkService {
     try {
         if (targetId) send(packet, targetId);
         else send(packet); // Broadcast to entire room
-    } catch(e) {}
+    } catch(e) {
+      console.warn('Packet send failed', e);
+    }
   }
 
   private getMyId(): string { return this.me.id || 'unknown-self'; }
