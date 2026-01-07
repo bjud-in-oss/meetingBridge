@@ -196,7 +196,10 @@ export class LanguageBranchService {
             onmessage: (msg: LiveServerMessage) => {
                 // 1. Play Audio
                 const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-                if (audioData) this.audioService.playAudioQueue(audioData);
+                if (audioData) {
+                    // console.log('[Branch] Actor Audio Received, playing...');
+                    this.audioService.playAudioQueue(audioData);
+                }
 
                 // 2. Capture Transcription (The Translated Text)
                 if (msg.serverContent?.outputTranscription) {
@@ -207,6 +210,7 @@ export class LanguageBranchService {
                 // 3. Turn Complete - Emit the full translation
                 if (msg.serverContent?.turnComplete) {
                     if (this.currentTranslationText.trim()) {
+                        console.log('[Branch] Translation Generated:', this.currentTranslationText);
                         this.onTranslationGenerated(this.currentTranslationText.trim());
                         this.currentTranslationText = '';
                     }
@@ -236,8 +240,19 @@ export class LanguageBranchService {
         Task: Translate the source text to the target language and speak it with the required emotion.
         `;
         
+        console.log('[Branch] Requesting Translation Actor:', prompt.replace(/\s+/g, ' ').trim());
+
         this.sessionPromise?.then(sess => {
-            try { sess.sendRealtimeInput({ content: [{ text: prompt }] }); } catch(e) {}
+            try { 
+                // Fix: Correct structure for text input to Live API
+                sess.sendRealtimeInput({ 
+                    content: [
+                        { parts: [{ text: prompt }] }
+                    ] 
+                }); 
+            } catch(e) {
+                console.error('[Branch] Failed to send translation request', e);
+            }
         });
     }
   }
